@@ -351,6 +351,7 @@ class OfflineNeuralTranslationEngine @Inject constructor(
                 val translator = Translation.getClient(options)
                 try {
                     translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+                    Unit
                 } finally {
                     translator.close()
                 }
