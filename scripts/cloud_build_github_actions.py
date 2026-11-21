@@ -78,13 +78,21 @@ class GitHubApiClient:
         if body is not None:
             req.add_header("Content-Type", content_type)
 
-        with self.opener.open(req, timeout=90) as resp:
-            raw = resp.read()
-            if not raw:
-                return {}
-            if "application/json" in resp.headers.get("Content-Type", ""):
-                return json.loads(raw.decode("utf-8"))
-            return raw
+        for attempt in range(1, 5):
+            try:
+                with self.opener.open(req, timeout=90) as resp:
+                    raw = resp.read()
+                    if not raw:
+                        return {}
+                    if "application/json" in resp.headers.get("Content-Type", ""):
+                        return json.loads(raw.decode("utf-8"))
+                    return raw
+            except urllib.error.HTTPError:
+                raise
+            except Exception as e:
+                if attempt == 4:
+                    raise
+                time.sleep(2 * attempt)
 
 
 def collect_project_files() -> List[Path]:
@@ -129,17 +137,29 @@ def ensure_repo(client: GitHubApiClient, repo_name: str) -> str:
 
 
 def push_project_via_git_data_api(client: GitHubApiClient, owner: str, repo: str) -> str:
+    import hashlib
     ref = client.request("GET", f"/repos/{owner}/{repo}/git/ref/heads/main")
     base_commit_sha = ref["object"]["sha"]
     base_commit = client.request("GET", f"/repos/{owner}/{repo}/git/commits/{base_commit_sha}")
     base_tree_sha = base_commit["tree"]["sha"]
 
+    existing_tree = client.request("GET", f"/repos/{owner}/{repo}/git/trees/{base_tree_sha}?recursive=1")
+    remote_blobs = {
+        item["path"]: item["sha"]
+        for item in existing_tree.get("tree", [])
+        if item.get("type") == "blob"
+    }
+
     files = collect_project_files()
-    print(f"[GitHub] Uploading {len(files)} project files via Git Data API...")
     tree_entries = []
+    uploaded_count = 0
     for path in files:
         rel_posix = path.relative_to(ROOT_DIR).as_posix()
         raw = path.read_bytes()
+        git_blob_sha = hashlib.sha1(f"blob {len(raw)}\0".encode("utf-8") + raw).hexdigest()
+        mode = "100755" if rel_posix == "gradlew" else "100644"
+        if remote_blobs.get(rel_posix) == git_blob_sha:
+            continue
         blob = client.request(
             "POST",
             f"/repos/{owner}/{repo}/git/blobs",
@@ -148,7 +168,7 @@ def push_project_via_git_data_api(client: GitHubApiClient, owner: str, repo: str
                 "encoding": "base64",
             },
         )
-        mode = "100755" if rel_posix == "gradlew" else "100644"
+        uploaded_count += 1
         tree_entries.append(
             {
                 "path": rel_posix,
@@ -157,6 +177,7 @@ def push_project_via_git_data_api(client: GitHubApiClient, owner: str, repo: str
                 "sha": blob["sha"],
             }
         )
+    print(f"[GitHub] Uploaded {uploaded_count} changed file(s) out of {len(files)} total.")
 
     new_tree = client.request(
         "POST",
@@ -247,6 +268,8 @@ def wait_for_workflow_and_download_apks(
                         f"Cloud build failed (conclusion={conclusion}). See logs: {run_html_url}"
                     )
                 break
+        except RuntimeError:
+            raise
         except urllib.error.HTTPError as e:
             if e.code in (404, 502, 503, 504):
                 print(f"  transient HTTP {e.code}, retrying...", flush=True)
