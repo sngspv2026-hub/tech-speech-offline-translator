@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      Forbids cleartext traffic globally and restricts HTTPS solely to the
+      offline Language Pack repository domain. No speech or text can ever be sent out.
+    -->
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">packs.offline-tech-translate.org</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,6 @@
+ctranslate2>=4.4.0
+transformers>=4.44.0
+sentencepiece>=0.2.0
+onnx>=1.16.0
+onnxruntime>=1.19.0
+cryptography>=43.0.0

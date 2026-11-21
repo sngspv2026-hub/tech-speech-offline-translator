@@ -1,0 +1,68 @@
+[
+  {
+    "id": "tc_01_mech_ru_en",
+    "domain": "mechanical",
+    "source_lang": "ru",
+    "target_lang": "en",
+    "routing": "DIRECT",
+    "raw_input": "рабочее давление на клапане DN-50 составляет пять целых две десятых мегапаскаля при температуре сто двадцать градусов Цельсия",
+    "expected_normalized": "рабочее давление на клапане DN-50 составляет 5.2 MPa при температуре 120 °C",
+    "expected_preserved_tokens": ["DN-50", "5.2 MPa", "120 °C"],
+    "expected_mandatory_terms": ["operating pressure", "valve"]
+  },
+  {
+    "id": "tc_02_it_ru_en",
+    "domain": "it_programming",
+    "source_lang": "ru",
+    "target_lang": "en",
+    "routing": "DIRECT",
+    "raw_input": "проверьте задержку вызова функции parseTelemetryPacket в модуле микроконтроллера при частоте двести мегагерц",
+    "expected_normalized": "проверьте задержку вызова функции parseTelemetryPacket в модуле микроконтроллера при частоте 200 MHz",
+    "expected_preserved_tokens": ["parseTelemetryPacket", "200 MHz"],
+    "expected_mandatory_terms": ["call latency", "microcontroller"]
+  },
+  {
+    "id": "tc_03_elec_ru_en",
+    "domain": "electrical",
+    "source_lang": "ru",
+    "target_lang": "en",
+    "routing": "DIRECT",
+    "raw_input": "напряжение питания шины постоянного тока двадцать четыре вольта и ток короткого замыкания десять килоампер",
+    "expected_normalized": "напряжение питания шины постоянного тока 24 V и ток короткого замыкания 10 kA",
+    "expected_preserved_tokens": ["24 V", "10 kA"],
+    "expected_mandatory_terms": ["direct current", "short circuit"]
+  },
+  {
+    "id": "tc_04_mech_ru_tr_pivot",
+    "domain": "mechanical",
+    "source_lang": "ru",
+    "target_lang": "tr",
+    "routing": "PIVOT",
+    "raw_input": "рабочее давление на клапане DN-50 составляет пять мегапаскалей",
+    "expected_normalized": "рабочее давление на клапане DN-50 составляет 5 MPa",
+    "expected_preserved_tokens": ["DN-50", "5 MPa"],
+    "expected_mandatory_terms": ["çalışma basıncı", "vana"]
+  },
+  {
+    "id": "tc_05_mech_tr_en",
+    "domain": "mechanical",
+    "source_lang": "tr",
+    "target_lang": "en",
+    "routing": "DIRECT",
+    "raw_input": "DN-50 vanasındaki çalışma basıncı beş megapaskal seviyesindedir",
+    "expected_normalized": "DN-50 vanasındaki çalışma basıncı 5 MPa seviyesindedir",
+    "expected_preserved_tokens": ["DN-50", "5 MPa"],
+    "expected_mandatory_terms": ["operating pressure"]
+  },
+  {
+    "id": "tc_06_oilgas_en_ru",
+    "domain": "oil_gas_energy",
+    "source_lang": "en",
+    "target_lang": "ru",
+    "routing": "DIRECT",
+    "raw_input": "wellhead pressure on shut-off valves M12x1.75 is twenty five megapascals",
+    "expected_normalized": "wellhead pressure on shut-off valves M12x1.75 is 25 MPa",
+    "expected_preserved_tokens": ["M12x1.75", "25 MPa"],
+    "expected_mandatory_terms": ["устьевое давление", "запорная арматура"]
+  }
+]

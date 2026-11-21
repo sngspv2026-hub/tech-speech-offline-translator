@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      AIR-GAPPED INDUSTRIAL FLAVOR:
+      Completely strips android.permission.INTERNET from the merged APK manifest
+      (overriding :engine:packmanager). Language packs are installed solely via Sideload (.tpk).
+    -->
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove" />
+
+</manifest>

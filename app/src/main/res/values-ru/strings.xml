@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ТехПереводчик (Офлайн)</string>
+    <string name="nav_live">Синхрон</string>
+    <string name="nav_conversation">Разговор</string>
+    <string name="nav_text">Текст</string>
+    <string name="nav_glossary">Глоссарий</string>
+    <string name="nav_history">История</string>
+    <string name="nav_settings">Настройки</string>
+    <string name="onboarding_title">Первый запуск: Языковые пакеты</string>
+    <string name="onboarding_body">Установите офлайн-пакеты для русского (RU), английского (EN) и турецкого (TR) языков, либо продолжите в Dev-режиме с моками для тестирования интерфейса без загрузки моделей.</string>
+    <string name="onboarding_install_packs">Установить пакеты RU / EN / TR</string>
+    <string name="onboarding_use_dev_mocks">Dev-режим (с моками)</string>
+    <string name="fgs_notification_title">Синхронный перевод активен</string>
+    <string name="fgs_notification_text">Офлайн-обработка на устройстве (VAD активен)</string>
+</resources>

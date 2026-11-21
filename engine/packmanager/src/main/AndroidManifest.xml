@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      STRICT PERMISSION ISOLATION:
+      Only :engine:packmanager requests INTERNET permission, solely for downloading
+      and updating versioned language packs over HTTPS.
+      All ASR, MT, TTS, and glossary modules operate 100% offline.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

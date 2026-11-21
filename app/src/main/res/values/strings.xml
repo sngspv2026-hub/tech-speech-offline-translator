@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TechSpeech Offline Translator</string>
+    <string name="nav_live">Live</string>
+    <string name="nav_conversation">Conversation</string>
+    <string name="nav_text">Text</string>
+    <string name="nav_glossary">Glossary</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+    <string name="onboarding_title">Offline Technical Translator Setup</string>
+    <string name="onboarding_body">Download offline language packs for Russian (RU), English (EN), and Turkish (TR), or continue in Dev Mock Mode to test the UI immediately without large model downloads.</string>
+    <string name="onboarding_install_packs">Install RU / EN / TR Packs</string>
+    <string name="onboarding_use_dev_mocks">Continue with Dev Mocks</string>
+    <string name="fgs_notification_title">Offline Speech Translation Active</string>
+    <string name="fgs_notification_text">VAD listening locally on device (0 bytes sent to cloud)</string>
+</resources>

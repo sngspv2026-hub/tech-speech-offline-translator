@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Teknik Çevirmen (Çevrimdışı)</string>
+    <string name="nav_live">Simultane</string>
+    <string name="nav_conversation">Sohbet</string>
+    <string name="nav_text">Metin</string>
+    <string name="nav_glossary">Terimler</string>
+    <string name="nav_history">Geçmiş</string>
+    <string name="nav_settings">Ayarlar</string>
+    <string name="onboarding_title">Çevrimdışı Dil Paketleri Kurulumu</string>
+    <string name="onboarding_body">Rusça (RU), İngilizce (EN) ve Türkçe (TR) için çevrimdışı dil paketlerini yükleyin veya modelleri indirmeden arayüzü test etmek için Geliştirici (Mock) modunda devam edin.</string>
+    <string name="onboarding_install_packs">RU / EN / TR Paketlerini Yükle</string>
+    <string name="onboarding_use_dev_mocks">Geliştirici Modu (Mock)</string>
+    <string name="fgs_notification_title">Simultane Çeviri Aktif</string>
+    <string name="fgs_notification_text">Cihaz üzerinde çevrimdışı işleme (VAD aktif)</string>
+</resources>
