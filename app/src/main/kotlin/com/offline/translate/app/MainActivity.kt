@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
@@ -72,6 +73,7 @@ enum class BottomNavDestination(
     LIVE("live", R.string.nav_live, Icons.Default.Translate),
     CONVERSATION("conversation", R.string.nav_conversation, Icons.Default.People),
     TEXT_OCR("text", R.string.nav_text, Icons.Default.DocumentScanner),
+    OVERLAY("overlay", R.string.nav_overlay, Icons.Default.Layers),
     GLOSSARY("glossary", R.string.nav_glossary, Icons.Default.Book)
 }
 
@@ -263,6 +265,7 @@ private fun MainTranslatorScaffold() {
             composable(BottomNavDestination.LIVE.route) { LiveTranslationRoute() }
             composable(BottomNavDestination.CONVERSATION.route) { ConversationRoute() }
             composable(BottomNavDestination.TEXT_OCR.route) { TextTranslationRoute() }
+            composable(BottomNavDestination.OVERLAY.route) { OverlayAndCallControlScreen() }
             composable(BottomNavDestination.GLOSSARY.route) { GlossaryRoute() }
             composable("history") { HistoryRoute() }
             composable("settings") { SettingsRoute() }

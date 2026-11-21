@@ -48,10 +48,12 @@ interface MultilingualMtEngine : TranslationEngine {
 
 /**
  * Production 3-Tier Hybrid Neural Translation Engine supporting RU, EN, TR + Auto-Detection:
- * - Tier 1: Google ML Kit On-Device Neural Translation (`com.google.mlkit:translate`) for 100% offline NMT once models are cached.
- * - Tier 2: Multi-Endpoint HTTPS Neural Translation Client (`translate.googleapis.com` + `api.mymemory.translated.net` failover)
- *   with long-text sentence chunking, UTF-8 handling (Cyrillic + Turkish ç, ğ, ı, İ, ö, ş, ü), and LRU caching for immediate 0-second post-install use.
- * - Tier 3: Embedded Offline Trilingual Lexicon + Technical Glossary (`DefaultGlossaryTermAdapter`) with honest error diagnostics when offline without models.
+ * - Tier 1 (Primary Offline): Google ML Kit On-Device Neural Translation (`com.google.mlkit:translate`)
+ *   for 100% offline NMT across all 6 directions (RU<->EN<->TR) once models are cached on device.
+ * - Tier 2 (Instant Online): Multi-Endpoint HTTPS NMT (`translate.googleapis.com` + `api.mymemory.translated.net`)
+ *   with paragraph/sentence chunking, UTF-8 handling (Cyrillic + Turkish ç, ğ, ı, İ, ö, ş, ü), and LRU cache.
+ * - Tier 3 (Offline Lexicon): Embedded trilingual lexicon + Technical Glossary (`DefaultGlossaryTermAdapter`)
+ *   with honest, explicit diagnostic error reporting if offline without downloaded ML Kit models.
  */
 @Singleton
 class OfflineNeuralTranslationEngine @Inject constructor(
@@ -70,16 +72,12 @@ class OfflineNeuralTranslationEngine @Inject constructor(
         .retryOnConnectionFailure(true)
         .build()
 
-    // Thread-safe LRU cache (up to 256 translated segments) to avoid redundant requests
     private val translationCache: MutableMap<String, String> = Collections.synchronizedMap(
         object : LinkedHashMap<String, String>(256, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 256
         }
     )
 
-    /**
-     * When false (e.g., in pure offline unit tests), skips external network calls and uses only Tier 1/Tier 3.
-     */
     @Volatile
     var allowNetworkFallback: Boolean = true
 
@@ -90,7 +88,7 @@ class OfflineNeuralTranslationEngine @Inject constructor(
         backend: ComputeBackend,
         cpuThreads: Int
     ) {
-        // Trigger background pre-download of ML Kit On-Device models if running on Android device
+        // Trigger non-blocking background pre-download of ML Kit On-Device models over any network
         runCatching {
             val src = if (pair.source.isAuto) "ru" else pair.source.code
             triggerMlKitBackgroundDownload(src, pair.target.code)
@@ -120,7 +118,6 @@ class OfflineNeuralTranslationEngine @Inject constructor(
         }
 
         val effectiveTargetLang = if (pair.source.isAuto && detectedLang == pair.target.code.lowercase()) {
-            // If user set Auto -> RU and typed Russian text, automatically translate to English
             if (detectedLang == "ru") "en" else "ru"
         } else {
             pair.target.code.lowercase()
@@ -144,7 +141,6 @@ class OfflineNeuralTranslationEngine @Inject constructor(
         )
 
         val preparedText = preprocessed.preparedText
-        // If the entire text was matched by glossary terms & non-translatable tokens, restore immediately!
         val remainingAlphabetic = preparedText
             .replace(Regex("""__(?:NT|TERM)_\d+__"""), "")
             .replace(Regex("""[^а-яА-ЯёЁa-zA-ZğüşıöçĞÜŞİÖÇ]"""), "")
@@ -157,7 +153,7 @@ class OfflineNeuralTranslationEngine @Inject constructor(
                 routingUsed = RoutingMode.DIRECT,
                 appliedTerms = preprocessed.appliedTerms,
                 preservedTokens = preprocessed.preservedTokens,
-                engineBackendName = "Offline Technical Glossary",
+                engineBackendName = "Офлайн тех. глоссарий",
                 latencyMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             )
         }
@@ -173,16 +169,20 @@ class OfflineNeuralTranslationEngine @Inject constructor(
                 routingUsed = RoutingMode.DIRECT,
                 appliedTerms = preprocessed.appliedTerms,
                 preservedTokens = preprocessed.preservedTokens,
-                engineBackendName = "Cached NMT",
+                engineBackendName = "Кэш NMT",
                 latencyMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             )
         }
 
-        // Tier 1: Try Google ML Kit On-Device Offline NMT (if models are already downloaded on device)
-        val mlKitResult = tryTranslateWithMlKitOnDevice(preparedText, detectedLang, effectiveTargetLang)
-        if (mlKitResult != null) {
-            translationCache[cacheKey] = mlKitResult
-            val finalRestored = termAdapter.postprocess(mlKitResult, preprocessed, effectiveTargetLang)
+        // Tier 1: Google ML Kit On-Device Offline NMT (works 100% offline in Airplane Mode once downloaded!)
+        val (mlKitTranslated, mlKitDiagnostic) = tryTranslateWithMlKitOnDevice(
+            text = preparedText,
+            sourceLang = detectedLang,
+            targetLang = effectiveTargetLang
+        )
+        if (mlKitTranslated != null) {
+            translationCache[cacheKey] = mlKitTranslated
+            val finalRestored = termAdapter.postprocess(mlKitTranslated, preprocessed, effectiveTargetLang)
             return@withContext TranslationEngineOutput(
                 translatedText = finalRestored,
                 detectedSourceLanguage = detectedLang,
@@ -194,7 +194,7 @@ class OfflineNeuralTranslationEngine @Inject constructor(
             )
         }
 
-        // Tier 3 (Fast Offline Lexicon check before network if coverage is 100%, e.g. known technical/common phrases)
+        // Tier 3 fast-path: Embedded Offline Lexicon when coverage >= 92%
         val (offlineText, offlineCoverage) = EmbeddedOfflineLexicon.translateOffline(
             text = preparedText,
             sourceLang = detectedLang,
@@ -209,12 +209,12 @@ class OfflineNeuralTranslationEngine @Inject constructor(
                 routingUsed = RoutingMode.DIRECT,
                 appliedTerms = preprocessed.appliedTerms,
                 preservedTokens = preprocessed.preservedTokens,
-                engineBackendName = "Embedded Offline Dictionary",
+                engineBackendName = "Встроенный офлайн-словарь",
                 latencyMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             )
         }
 
-        // Tier 2: Live Multi-Endpoint HTTPS NMT with paragraph & sentence chunking
+        // Tier 2: Live Multi-Endpoint HTTPS NMT (while offline ML Kit models are not yet downloaded)
         var networkErrorDetail: String? = null
         if (allowNetworkFallback) {
             val httpsResult = tryTranslateMultiParagraphHttps(preparedText, detectedLang, effectiveTargetLang)
@@ -228,7 +228,7 @@ class OfflineNeuralTranslationEngine @Inject constructor(
                     routingUsed = RoutingMode.DIRECT,
                     appliedTerms = preprocessed.appliedTerms,
                     preservedTokens = preprocessed.preservedTokens,
-                    engineBackendName = "Neural NMT (${detectedLang.uppercase()}→${effectiveTargetLang.uppercase()})",
+                    engineBackendName = "Онлайн NMT (${detectedLang.uppercase()}→${effectiveTargetLang.uppercase()})",
                     latencyMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                 )
             } else {
@@ -236,14 +236,14 @@ class OfflineNeuralTranslationEngine @Inject constructor(
             }
         }
 
-        // Fallback to partial offline translation + clear diagnostic error message
         val bestEffortOffline = termAdapter.postprocess(offlineText, preprocessed, effectiveTargetLang)
-        val diagnosticError = if (offlineCoverage > 0.35f) {
+        val diagnosticError = if (offlineCoverage > 0.45f) {
             null
         } else {
-            "Не удалось выполнить полный перевод (${detectedLang.uppercase()}→${effectiveTargetLang.uppercase()}): " +
-                "нет подключения к сети (${networkErrorDetail ?: "offline"}), а офлайн-модель ML Kit ещё не загружена на телефон. " +
-                "Подключитесь к интернету или скачайте офлайн-пакет в Настройках."
+            val mlNote = mlKitDiagnostic ?: "офлайн-модели не загружены"
+            "Офлайн-перевод (${detectedLang.uppercase()}→${effectiveTargetLang.uppercase()}) недоступен: " +
+                "$mlNote; сеть недоступна (${networkErrorDetail ?: "offline"}). " +
+                "Откройте Настройки → «Скачать офлайн-модели RU + EN + TR» при включённом интернете."
         }
 
         return@withContext TranslationEngineOutput(
@@ -260,9 +260,6 @@ class OfflineNeuralTranslationEngine @Inject constructor(
 
     override suspend fun unload() = Unit
 
-    /**
-     * Fast local language detection supporting Russian (Cyrillic), Turkish (ç, ğ, ı, İ, ö, ş, ü & morphology), and English.
-     */
     fun detectLanguageLocal(text: String): String {
         val cyrillicCount = text.count { it in 'а'..'я' || it in 'А'..'Я' || it == 'ё' || it == 'Ё' }
         if (cyrillicCount > 0) return "ru"
@@ -282,81 +279,128 @@ class OfflineNeuralTranslationEngine @Inject constructor(
         return "en"
     }
 
+    private fun toMlKitLanguage(code: String): String? = when (code.lowercase()) {
+        "ru" -> TranslateLanguage.RUSSIAN
+        "en" -> TranslateLanguage.ENGLISH
+        "tr" -> TranslateLanguage.TURKISH
+        else -> TranslateLanguage.fromLanguageTag(code)
+    }
+
+    /**
+     * Queries Google ML Kit RemoteModelManager for the REAL set of models currently cached on disk.
+     */
+    suspend fun getDownloadedMlKitLanguages(): Set<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val manager = RemoteModelManager.getInstance()
+            val models = manager.getDownloadedModels(TranslateRemoteModel::class.java).await()
+            models.map { it.language.lowercase() }.toSet()
+        }.getOrDefault(emptySet())
+    }
+
+    /**
+     * Explicitly downloads real Google ML Kit On-Device NMT weights for RU, EN, and TR over any connection (Wi-Fi or Mobile).
+     * Does NOT swallow errors: returns Failure with real exception message if download fails.
+     */
+    suspend fun downloadAllCoreOfflineModels(): Result<Set<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val manager = RemoteModelManager.getInstance()
+            val conditions = DownloadConditions.Builder().build() // Works on Wi-Fi AND 4G/5G mobile data
+            val targetLangs = listOf(
+                TranslateLanguage.RUSSIAN,
+                TranslateLanguage.ENGLISH,
+                TranslateLanguage.TURKISH
+            )
+            for (lang in targetLangs) {
+                val model = TranslateRemoteModel.Builder(lang).build()
+                val alreadyDownloaded = manager.isModelDownloaded(model).await()
+                if (!alreadyDownloaded) {
+                    SafeLogger.i("MLKitOffline", "Downloading ML Kit model for $lang ...")
+                    manager.download(model, conditions).await()
+                }
+            }
+            val confirmed = manager.getDownloadedModels(TranslateRemoteModel::class.java)
+                .await()
+                .map { it.language.lowercase() }
+                .toSet()
+            require(confirmed.containsAll(setOf("ru", "en", "tr"))) {
+                "Загружены не все модели ML Kit (найдены: ${confirmed.joinToString()})."
+            }
+            confirmed
+        }
+    }
+
+    suspend fun downloadOfflineMlKitModels(sourceLang: String, targetLang: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val manager = RemoteModelManager.getInstance()
+                val conditions = DownloadConditions.Builder().build()
+                val langsToFetch = linkedSetOf(
+                    toMlKitLanguage(sourceLang) ?: error("Неподдерживаемый язык ML Kit: $sourceLang"),
+                    toMlKitLanguage(targetLang) ?: error("Неподдерживаемый язык ML Kit: $targetLang"),
+                    TranslateLanguage.ENGLISH // Always ensure EN pivot model is present for RU<->TR offline
+                )
+                for (lang in langsToFetch) {
+                    val model = TranslateRemoteModel.Builder(lang).build()
+                    if (!manager.isModelDownloaded(model).await()) {
+                        manager.download(model, conditions).await()
+                    }
+                }
+                Unit
+            }
+        }
+
     private suspend fun tryTranslateWithMlKitOnDevice(
         text: String,
         sourceLang: String,
         targetLang: String
-    ): String? {
-        return runCatching {
-            val mlSrc = TranslateLanguage.fromLanguageTag(sourceLang) ?: return null
-            val mlTgt = TranslateLanguage.fromLanguageTag(targetLang) ?: return null
-            val modelManager = RemoteModelManager.getInstance()
-            val srcDownloaded = modelManager.isModelDownloaded(TranslateRemoteModel.Builder(mlSrc).build()).await()
-            val tgtDownloaded = modelManager.isModelDownloaded(TranslateRemoteModel.Builder(mlTgt).build()).await()
+    ): Pair<String?, String?> {
+        return try {
+            val mlSrc = toMlKitLanguage(sourceLang) ?: return null to "язык $sourceLang не поддерживается ML Kit"
+            val mlTgt = toMlKitLanguage(targetLang) ?: return null to "язык $targetLang не поддерживается ML Kit"
+            val manager = RemoteModelManager.getInstance()
+            val srcReady = manager.isModelDownloaded(TranslateRemoteModel.Builder(mlSrc).build()).await()
+            val tgtReady = manager.isModelDownloaded(TranslateRemoteModel.Builder(mlTgt).build()).await()
+
+            if (!srcReady || !tgtReady) {
+                val missing = buildList {
+                    if (!srcReady) add(sourceLang.uppercase())
+                    if (!tgtReady) add(targetLang.uppercase())
+                }.joinToString(", ")
+                // Kick off non-blocking background download so future calls work offline
+                triggerMlKitBackgroundDownload(sourceLang, targetLang)
+                return null to "офлайн-модель ML Kit ($missing) ещё не скачана"
+            }
 
             val options = TranslatorOptions.Builder()
                 .setSourceLanguage(mlSrc)
                 .setTargetLanguage(mlTgt)
                 .build()
             val translator = Translation.getClient(options)
-
-            if (!srcDownloaded || !tgtDownloaded) {
-                // Start non-blocking background download so future calls work 100% offline
-                translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                translator.close()
-                return null
-            }
-
             try {
-                // Preserve paragraph line breaks
                 val paragraphs = text.split("\n")
                 val translatedParagraphs = paragraphs.map { p ->
                     if (p.isBlank()) "" else translator.translate(p).await()
                 }
-                translatedParagraphs.joinToString("\n")
+                translatedParagraphs.joinToString("\n") to null
             } finally {
                 translator.close()
             }
-        }.getOrNull()
+        } catch (e: Throwable) {
+            SafeLogger.w("MLKitOffline", "ML Kit on-device translate error: ${e.message}")
+            null to "ML Kit: ${e.localizedMessage ?: e.javaClass.simpleName}"
+        }
     }
 
     private fun triggerMlKitBackgroundDownload(sourceLang: String, targetLang: String) {
         runCatching {
-            val mlSrc = TranslateLanguage.fromLanguageTag(sourceLang) ?: return
-            val mlTgt = TranslateLanguage.fromLanguageTag(targetLang) ?: return
-            val options = TranslatorOptions.Builder()
-                .setSourceLanguage(mlSrc)
-                .setTargetLanguage(mlTgt)
-                .build()
-            val translator = Translation.getClient(options)
-            translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                .addOnCompleteListener { translator.close() }
+            val mlSrc = toMlKitLanguage(sourceLang) ?: return
+            val mlTgt = toMlKitLanguage(targetLang) ?: return
+            val manager = RemoteModelManager.getInstance()
+            val conditions = DownloadConditions.Builder().build()
+            manager.download(TranslateRemoteModel.Builder(mlSrc).build(), conditions)
+            manager.download(TranslateRemoteModel.Builder(mlTgt).build(), conditions)
         }
     }
-
-    /**
-     * Downloads ML Kit On-Device models explicitly and awaits completion (called from PackManager / Settings).
-     */
-    suspend fun downloadOfflineMlKitModels(sourceLang: String, targetLang: String): Result<Unit> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val mlSrc = TranslateLanguage.fromLanguageTag(sourceLang)
-                    ?: error("Unsupported ML Kit language: $sourceLang")
-                val mlTgt = TranslateLanguage.fromLanguageTag(targetLang)
-                    ?: error("Unsupported ML Kit language: $targetLang")
-                val options = TranslatorOptions.Builder()
-                    .setSourceLanguage(mlSrc)
-                    .setTargetLanguage(mlTgt)
-                    .build()
-                val translator = Translation.getClient(options)
-                try {
-                    translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
-                    Unit
-                } finally {
-                    translator.close()
-                }
-            }
-        }
 
     private fun tryTranslateMultiParagraphHttps(
         text: String,
@@ -407,7 +451,6 @@ class OfflineNeuralTranslationEngine @Inject constructor(
     ): String {
         val encoded = URLEncoder.encode(chunk, "UTF-8")
 
-        // Endpoint 1: Google Translate GTX JSON endpoint
         val primaryError = runCatching {
             val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$sourceLang&tl=$targetLang&dt=t&q=$encoded"
             val req = Request.Builder()
@@ -433,12 +476,11 @@ class OfflineNeuralTranslationEngine @Inject constructor(
             }
         }.exceptionOrNull()
 
-        // Endpoint 2 (Failover): MyMemory REST Translation API
         val secondaryError = runCatching {
             val url = "https://api.mymemory.translated.net/get?q=$encoded&langpair=$sourceLang|$targetLang"
             val req = Request.Builder()
                 .url(url)
-                .header("User-Agent", "TechSpeechTranslator/1.2")
+                .header("User-Agent", "TechSpeechTranslator/3.0")
                 .get()
                 .build()
             httpClient.newCall(req).execute().use { resp ->
@@ -450,13 +492,13 @@ class OfflineNeuralTranslationEngine @Inject constructor(
             }
         }.exceptionOrNull()
 
-        SafeLogger.w("HybridNMT", "HTTPS translation endpoints failed: primary=${primaryError?.message}, secondary=${secondaryError?.message}")
+        SafeLogger.w("HybridNMT", "HTTPS endpoints failed: primary=${primaryError?.message}, secondary=${secondaryError?.message}")
         throw IllegalStateException(primaryError?.message ?: secondaryError?.message ?: "Сервер перевода недоступен")
     }
 }
 
 /**
- * Composite Pivot Translation Engine (e.g., ru -> en -> tr when manifest specifies routing: "pivot").
+ * Composite Pivot Translation Engine.
  */
 @Singleton
 class PivotTranslationEngine @Inject constructor(
@@ -501,7 +543,6 @@ class PivotTranslationEngine @Inject constructor(
             pair.source.code.lowercase()
         }
 
-        // Pre-apply direct source->target glossary terms so technical terminology is preserved across pivot
         val directPayload = termAdapter.preprocess(
             normalizedSourceText = text,
             sourceLang = resolvedSrcCode,

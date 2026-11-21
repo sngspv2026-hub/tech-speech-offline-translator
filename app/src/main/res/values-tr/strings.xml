@@ -3,8 +3,10 @@
     <string name="app_name">TechSpeech Çevirmen</string>
     <string name="nav_live">Çeviri</string>
     <string name="nav_conversation">Sohbet</string>
-    <string name="nav_text">Teknik OCR</string>
+    <string name="nav_text">Foto/OCR</string>
+    <string name="nav_overlay">Ekran/Arama</string>
     <string name="nav_glossary">Terimler</string>
+    <string name="accessibility_service_description">Sadece yüzen TechSpeech butonuna bastığınızda mesajlaşma uygulamaları ve ekrandaki metinleri çevirir. Şifre alanlarını asla okumaz.</string>
     <string name="nav_history">Geçmiş</string>
     <string name="nav_settings">Ayarlar</string>
     <string name="fgs_notification_title">Sesli Çeviri Aktif</string>

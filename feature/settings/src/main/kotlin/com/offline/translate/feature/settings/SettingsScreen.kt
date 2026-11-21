@@ -285,20 +285,39 @@ fun SettingsRoute(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (packState.status == PackInstallStatus.FAILED && !packState.errorMessage.isNullOrBlank()) {
+                        Text(
+                            text = "Ошибка: ${packState.errorMessage}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                     if (packState.status == PackInstallStatus.DOWNLOADING || packState.status == PackInstallStatus.VERIFYING) {
-                        LinearProgressIndicator(
-                            progress = { packState.progressPercent / 100f },
-                            modifier = Modifier.fillMaxWidth()
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = "Загрузка нейросетевых моделей ML Kit на устройство (RU + EN + TR)...",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (packState.status == PackInstallStatus.INSTALLED) {
+                            Text(
+                                text = "✓ Установлено (офлайн готов)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.align(Alignment.CenterVertically)
+                            )
                             OutlinedButton(onClick = { viewModel.uninstallPack(m.packId) }) {
-                                Text("Удалить офлайн-кэш")
+                                Text("Удалить")
                             }
                         } else {
-                            Button(onClick = { viewModel.installPack(m.packId) }) {
-                                Text("Скачать для работы без сети")
+                            Button(
+                                onClick = { viewModel.installPack(m.packId) },
+                                enabled = packState.status != PackInstallStatus.DOWNLOADING
+                            ) {
+                                Text("Скачать офлайн-модели (RU/EN/TR)")
                             }
                         }
                     }

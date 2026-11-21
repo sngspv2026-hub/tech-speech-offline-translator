@@ -1,9 +1,13 @@
 package com.offline.translate.feature.text
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,6 +28,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VolumeUp
@@ -57,9 +62,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.offline.translate.core.database.TranslationHistoryDao
 import com.offline.translate.core.database.TranslationHistoryEntity
 import com.offline.translate.core.datastore.AppSettingsDataStore
@@ -86,7 +88,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
+import java.io.File
 import java.util.Locale
 import javax.inject.Inject
 
@@ -122,6 +124,7 @@ class TextTranslationViewModel @Inject constructor(
     private val engineRegistry: EngineRegistry,
     private val pipeline: StreamingTranslationPipeline,
     private val ocrCleaner: TechnicalOcrCleaner,
+    private val photoOcrEngine: SafePhotoOcrEngine,
     private val historyDao: TranslationHistoryDao
 ) : ViewModel() {
 
@@ -214,42 +217,41 @@ class TextTranslationViewModel @Inject constructor(
     }
 
     /**
-     * Runs real on-device ML Kit Text Recognition on an image selected by the user (photo of a machine nameplate,
-     * schematic, document, or PLC screen), cleans industrial OCR noise, and translates it.
+     * Runs crash-safe downsampled multi-script Photo OCR (Google ML Kit Latin/Turkish + Tesseract Russian Cyrillic),
+     * cleans industrial OCR noise, and translates the extracted text.
      */
     fun recognizeImageAndTranslate(context: Context, imageUri: Uri) {
         if (_localState.value.isProcessing) return
         translateJob?.cancel()
         translateJob = viewModelScope.launch {
             _localState.value = _localState.value.copy(isProcessing = true, errorMessage = null)
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            try {
-                val inputImage = InputImage.fromFilePath(context, imageUri)
-                val visionText = recognizer.process(inputImage).await()
-                val extractedRaw = visionText.text.trim()
-                if (extractedRaw.isEmpty()) {
-                    _localState.value = _localState.value.copy(
-                        isProcessing = false,
-                        errorMessage = "На выбранном изображении не обнаружено читаемого текста."
-                    )
-                    return@launch
-                }
-                val prepared = if (_localState.value.enableOcrCleanup) {
-                    ocrCleaner.cleanOcrText(extractedRaw)
-                } else {
-                    extractedRaw
-                }
-                _localState.value = _localState.value.copy(inputText = prepared, isProcessing = false)
-                translateText(prepared)
-            } catch (e: Exception) {
+            val s = settingsDataStore.settingsFlow.first()
+            val srcHint = if (s.autoDetectSource) "auto" else s.sourceLanguageCode
+            val ocrResult = photoOcrEngine.recognizeTextFromUri(context, imageUri, srcHint)
+            if (ocrResult.isFailure) {
                 _localState.value = _localState.value.copy(
                     isProcessing = false,
-                    errorMessage = "Ошибка распознавания фото (OCR): ${e.localizedMessage ?: "не удалось прочитать файл"}"
+                    errorMessage = ocrResult.exceptionOrNull()?.localizedMessage
+                        ?: "Не удалось распознать текст с фото."
                 )
-            } finally {
-                runCatching { recognizer.close() }
+                return@launch
             }
+
+            val extractedRaw = ocrResult.getOrThrow()
+            val prepared = if (_localState.value.enableOcrCleanup) {
+                ocrCleaner.cleanOcrText(extractedRaw)
+            } else {
+                extractedRaw
+            }
+            _localState.value = _localState.value.copy(inputText = prepared, isProcessing = false)
+            translateText(prepared)
         }
+    }
+
+    fun onCameraPermissionDenied() {
+        _localState.value = _localState.value.copy(
+            errorMessage = "Разрешите доступ к камере для фотографирования документов и шильдиков."
+        )
     }
 
     fun translateText(overrideText: String? = null) {
@@ -380,6 +382,36 @@ fun TextTranslationRoute(
         }
     }
 
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        val uri = pendingCameraUri
+        if (success && uri != null) {
+            copiedBanner = false
+            viewModel.recognizeImageAndTranslate(context, uri)
+        }
+    }
+
+    fun launchCameraCapture() {
+        val photoDir = File(context.cacheDir, "ocr_photos").apply { mkdirs() }
+        val photoFile = File(photoDir, "ocr_${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+        pendingCameraUri = uri
+        cameraCaptureLauncher.launch(uri)
+    }
+
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            viewModel.onCameraPermissionDenied()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -498,17 +530,34 @@ fun TextTranslationRoute(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    OutlinedButton(
+                        onClick = {
+                            val hasCam = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (hasCam) launchCameraCapture() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
+                        },
+                        enabled = !state.isProcessing,
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = "Камера", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Камера")
+                    }
+
                     OutlinedButton(
                         onClick = { imagePickerLauncher.launch("image/*") },
                         enabled = !state.isProcessing,
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                     ) {
-                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Фото OCR")
+                        Icon(Icons.Default.Image, contentDescription = "Галерея", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Фото")
                     }
 
                     OutlinedButton(
@@ -517,17 +566,13 @@ fun TextTranslationRoute(
                             if (!clipText.isNullOrBlank()) {
                                 copiedBanner = false
                                 viewModel.translateText(clipText)
-                            } else {
-                                viewModel.updateInput("")
                             }
                         },
                         enabled = !state.isProcessing,
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
                     ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Буфер")
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Буфер", modifier = Modifier.size(18.dp))
                     }
 
                     Button(
@@ -538,7 +583,7 @@ fun TextTranslationRoute(
                         enabled = !state.isProcessing && state.inputText.isNotBlank(),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         if (state.isProcessing) {
                             CircularProgressIndicator(
@@ -548,7 +593,7 @@ fun TextTranslationRoute(
                             )
                         } else {
                             Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text("Перевести", fontWeight = FontWeight.SemiBold)
                         }
                     }

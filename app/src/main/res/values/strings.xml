@@ -4,7 +4,9 @@
     <string name="nav_live">Translate</string>
     <string name="nav_conversation">Dialog</string>
     <string name="nav_text">Tech OCR</string>
+    <string name="nav_overlay">Screen/Call</string>
     <string name="nav_glossary">Glossary</string>
+    <string name="accessibility_service_description">Reads visible text from messengers and apps ONLY when you tap Translate Screen on the floating TechSpeech bubble. Never reads passwords.</string>
     <string name="nav_history">History</string>
     <string name="nav_settings">Settings</string>
     <string name="fgs_notification_title">Speech Translation Active</string>

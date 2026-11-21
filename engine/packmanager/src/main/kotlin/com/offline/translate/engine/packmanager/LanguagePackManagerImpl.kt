@@ -84,6 +84,7 @@ class LanguagePackManagerImpl @Inject constructor(
     private suspend fun syncInstalledPacksFromDb() {
         val installedEntities = installedPackDao.getInstalledPacksSnapshot()
         val installedById = installedEntities.associateBy { it.packId }
+        val realMlKitLangs = directMtEngine.getDownloadedMlKitLanguages()
         val catalog = defaultBuiltInCatalog().toMutableList()
 
         // Include any sideloaded custom packs not in default catalog
@@ -98,13 +99,15 @@ class LanguagePackManagerImpl @Inject constructor(
 
         _packsState.value = catalog.map { manifest ->
             val entity = installedById[manifest.packId]
-            if (entity != null) {
+            val requiredLangCodes = manifest.languages.map { it.code.lowercase() }.toSet()
+            val mlKitModelsReady = requiredLangCodes.isNotEmpty() && realMlKitLangs.containsAll(requiredLangCodes)
+            if (mlKitModelsReady || (entity != null && realMlKitLangs.isEmpty() && entity.packId.contains("sideload"))) {
                 LanguagePackState(
                     manifest = manifest,
                     status = PackInstallStatus.INSTALLED,
                     progressPercent = 100,
-                    downloadedBytes = entity.diskSizeBytes,
-                    localInstallPath = entity.installDirPath
+                    downloadedBytes = entity?.diskSizeBytes ?: manifest.hardwareRequirements.diskSizeBytes,
+                    localInstallPath = entity?.installDirPath ?: "mlkit_on_device"
                 )
             } else {
                 LanguagePackState(
@@ -149,23 +152,20 @@ class LanguagePackManagerImpl @Inject constructor(
             require(index >= 0) { "Pack not found: $packId" }
             val targetManifest = currentList[index].manifest
 
-            // Download real ML Kit On-Device NMT models for all directions in this pack
-            updatePackStatus(packId, PackInstallStatus.DOWNLOADING, progress = 25, downloaded = 0L)
-            for (dir in targetManifest.directions) {
-                runCatching {
-                    directMtEngine.downloadOfflineMlKitModels(dir.source, dir.target)
+            // Download REAL ML Kit On-Device NMT models for RU + EN + TR (no Wi-Fi restriction, real error reporting!)
+            updatePackStatus(packId, PackInstallStatus.DOWNLOADING, progress = 20, downloaded = 0L)
+            val downloadResult = directMtEngine.downloadAllCoreOfflineModels()
+            if (downloadResult.isFailure) {
+                val err = downloadResult.exceptionOrNull()?.localizedMessage
+                    ?: "Ошибка скачивания офлайн-моделей ML Kit. Проверьте интернет-соединение."
+                _packsState.value = _packsState.value.map { state ->
+                    if (state.manifest.packId == packId) {
+                        state.copy(status = PackInstallStatus.FAILED, progressPercent = 0, errorMessage = err)
+                    } else state
                 }
+                error(err)
             }
-
-            for (step in listOf(55, 85, 100)) {
-                updatePackStatus(
-                    packId = packId,
-                    status = if (step < 100) PackInstallStatus.DOWNLOADING else PackInstallStatus.VERIFYING,
-                    progress = step,
-                    downloaded = (targetManifest.hardwareRequirements.diskSizeBytes * step) / 100
-                )
-                delay(70L)
-            }
+            updatePackStatus(packId, PackInstallStatus.VERIFYING, progress = 90, downloaded = targetManifest.hardwareRequirements.diskSizeBytes)
 
             val stagingDir = File(packsRootDir, "${packId}_staging").apply {
                 deleteRecursively()
@@ -286,26 +286,8 @@ class LanguagePackManagerImpl @Inject constructor(
     }
 
     override suspend fun getRoutingForPair(pair: LanguagePair): RoutingMode {
-        val installedManifests = _packsState.value
-            .filter { it.status == PackInstallStatus.INSTALLED }
-            .map { it.manifest }
-
-        // If any installed pack provides a DIRECT model for this pair, prefer DIRECT
-        val hasDirect = installedManifests.any { manifest ->
-            manifest.directions.any {
-                it.source == pair.source.code && it.target == pair.target.code && it.routing == RoutingMode.DIRECT
-            }
-        }
-        if (hasDirect) return RoutingMode.DIRECT
-
-        // Default routing rule: ru<->tr uses PIVOT via English unless a direct pack is installed
-        return if ((pair.source.code == "ru" && pair.target.code == "tr") ||
-            (pair.source.code == "tr" && pair.target.code == "ru")
-        ) {
-            RoutingMode.PIVOT
-        } else {
-            RoutingMode.DIRECT
-        }
+        // Hybrid ML Kit On-Device + Multi-Endpoint NMT handles all 6 RU/EN/TR directions directly
+        return RoutingMode.DIRECT
     }
 
     override suspend fun getTotalDiskUsageBytes(): Long = withContext(Dispatchers.IO) {

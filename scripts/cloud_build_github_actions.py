@@ -252,6 +252,8 @@ def wait_for_workflow_and_download_apks(
                 print(f"  transient HTTP {e.code}, retrying...", flush=True)
             else:
                 raise
+        except Exception as e:
+            print(f"  transient network error ({e}), retrying...", flush=True)
         time.sleep(10)
 
     artifacts = client.request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
