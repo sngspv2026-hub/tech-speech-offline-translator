@@ -2,31 +2,39 @@ package com.offline.translate.core.designsystem
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +52,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.offline.translate.core.model.AppliedTermMatch
@@ -52,7 +61,8 @@ import com.offline.translate.core.model.LanguagePair
 import com.offline.translate.core.model.TechnicalDomain
 
 /**
- * Quick language pair selector with one-tap Swap and full TalkBack support.
+ * Commercial Material 3 Language Pair Selector Bar supporting Auto-Detect ("auto"), RU, EN, TR,
+ * detected language badge, and one-tap Swap.
  */
 @Composable
 fun LanguagePairSelectorBar(
@@ -63,79 +73,188 @@ fun LanguagePairSelectorBar(
     onSelectTarget: (Language) -> Unit,
     onSwap: () -> Unit,
     swapContentDescription: String,
+    allowAutoDetect: Boolean = true,
+    detectedSourceCode: String? = null,
     modifier: Modifier = Modifier
 ) {
     var sourceMenuExpanded by remember { mutableStateOf(false) }
     var targetMenuExpanded by remember { mutableStateOf(false) }
 
-    Row(
+    val sourceOptions = remember(availableLanguages, allowAutoDetect) {
+        if (allowAutoDetect) {
+            listOf(Language.AUTO) + availableLanguages.filter { !it.isAuto }
+        } else {
+            availableLanguages.filter { !it.isAuto }
+        }
+    }
+    val targetOptions = remember(availableLanguages) {
+        availableLanguages.filter { !it.isAuto }
+    }
+
+    Card(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Box(modifier = Modifier.weight(1f)) {
-            OutlinedButton(
-                onClick = { sourceMenuExpanded = true },
-                modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                FilledTonalButton(
+                    onClick = { sourceMenuExpanded = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                ) {
+                    val label = if (pair.source.isAuto) {
+                        val detSuffix = detectedSourceCode?.takeIf { it.isNotBlank() && it != "auto" }
+                            ?.let { " • ${it.uppercase()}" }.orEmpty()
+                        "${pair.source.localizedName(uiLocale)}$detSuffix"
+                    } else {
+                        "${pair.source.localizedName(uiLocale)} (${pair.source.code.uppercase()})"
+                    }
+                    Text(
+                        text = label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                DropdownMenu(
+                    expanded = sourceMenuExpanded,
+                    onDismissRequest = { sourceMenuExpanded = false }
+                ) {
+                    sourceOptions.forEach { lang ->
+                        DropdownMenuItem(
+                            text = {
+                                val title = if (lang.isAuto) {
+                                    "✨ ${lang.localizedName(uiLocale)}"
+                                } else {
+                                    "${lang.localizedName(uiLocale)} (${lang.nativeName})"
+                                }
+                                Text(title)
+                            },
+                            onClick = {
+                                sourceMenuExpanded = false
+                                onSelectSource(lang)
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            FilledTonalIconButton(
+                onClick = onSwap,
+                shape = CircleShape,
+                modifier = Modifier
+                    .size(40.dp)
+                    .semantics { contentDescription = swapContentDescription }
             ) {
-                Text(
-                    text = "${pair.source.localizedName(uiLocale)} (${pair.source.code.uppercase()})",
-                    maxLines = 1
+                Icon(
+                    imageVector = Icons.Default.SwapHoriz,
+                    contentDescription = swapContentDescription,
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
-            DropdownMenu(
-                expanded = sourceMenuExpanded,
-                onDismissRequest = { sourceMenuExpanded = false }
-            ) {
-                availableLanguages.forEach { lang ->
-                    DropdownMenuItem(
-                        text = { Text("${lang.localizedName(uiLocale)} (${lang.nativeName})") },
-                        onClick = {
-                            sourceMenuExpanded = false
-                            onSelectSource(lang)
-                        }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            Box(modifier = Modifier.weight(1f)) {
+                FilledTonalButton(
+                    onClick = { targetMenuExpanded = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        text = "${pair.target.localizedName(uiLocale)} (${pair.target.code.uppercase()})",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold
                     )
+                }
+                DropdownMenu(
+                    expanded = targetMenuExpanded,
+                    onDismissRequest = { targetMenuExpanded = false }
+                ) {
+                    targetOptions.forEach { lang ->
+                        DropdownMenuItem(
+                            text = { Text("${lang.localizedName(uiLocale)} (${lang.nativeName})") },
+                            onClick = {
+                                targetMenuExpanded = false
+                                onSelectTarget(lang)
+                            }
+                        )
+                    }
                 }
             }
         }
+    }
+}
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        IconButton(
-            onClick = onSwap,
-            modifier = Modifier.semantics { contentDescription = swapContentDescription }
-        ) {
-            Icon(
-                imageVector = Icons.Default.SwapHoriz,
-                contentDescription = swapContentDescription,
-                tint = MaterialTheme.colorScheme.primary
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Box(modifier = Modifier.weight(1f)) {
-            OutlinedButton(
-                onClick = { targetMenuExpanded = true },
-                modifier = Modifier.fillMaxWidth()
+/**
+ * Displays real error messages clearly without hiding failures behind fake data.
+ */
+@Composable
+fun ErrorDiagnosticBanner(
+    errorMessage: String,
+    onRetry: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Icon(
+                    imageVector = Icons.Default.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
                 Text(
-                    text = "${pair.target.localizedName(uiLocale)} (${pair.target.code.uppercase()})",
-                    maxLines = 1
+                    text = errorMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f)
                 )
             }
-            DropdownMenu(
-                expanded = targetMenuExpanded,
-                onDismissRequest = { targetMenuExpanded = false }
-            ) {
-                availableLanguages.forEach { lang ->
-                    DropdownMenuItem(
-                        text = { Text("${lang.localizedName(uiLocale)} (${lang.nativeName})") },
-                        onClick = {
-                            targetMenuExpanded = false
-                            onSelectTarget(lang)
+            if (onRetry != null || onDismiss != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (onDismiss != null) {
+                        TextButton(onClick = onDismiss) {
+                            Text("Закрыть", color = MaterialTheme.colorScheme.onErrorContainer)
                         }
-                    )
+                    }
+                    if (onRetry != null) {
+                        TextButton(onClick = onRetry) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Повторить", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }
@@ -151,36 +270,34 @@ fun AudioLevelIndicator(
     isSpeechDetected: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val normalized = ((rmsDb + 60f) / 60f).coerceIn(0.05f, 1f)
+    val normalized = ((rmsDb + 60f) / 60f).coerceIn(0.04f, 1f)
     val animatedFraction by animateFloatAsState(targetValue = normalized, label = "rmsLevel")
     val barColor = if (isSpeechDetected) {
         MaterialTheme.colorScheme.secondary
     } else {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
     }
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(animatedFraction)
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(barColor)
-            )
-        }
+                .fillMaxWidth(animatedFraction)
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(barColor)
+        )
     }
 }
 
 /**
- * Displays streaming text where confirmed text is rendered in solid high-contrast style
- * and unstable partial text is visually distinct (italic, underlined, muted color).
+ * Displays streaming or final translation text with high readability, applied glossary badges,
+ * and optional bottom action buttons (Copy, Speak, Favorite).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -192,21 +309,21 @@ fun StreamingTextPanel(
     placeholderText: String,
     appliedTerms: List<AppliedTermMatch> = emptyList(),
     latencyBadgeText: String? = null,
+    actionsRow: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.onSurface
-    val partialColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
+    val partialColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
 
     Card(
         modifier = modifier
             .fillMaxWidth()
             .semantics { liveRegion = LiveRegionMode.Polite },
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -216,18 +333,22 @@ fun StreamingTextPanel(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 if (latencyBadgeText != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = latencyBadgeText,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             if (confirmedText.isBlank() && unstablePartialText.isBlank()) {
                 Text(
@@ -270,7 +391,7 @@ fun StreamingTextPanel(
             }
 
             if (appliedTerms.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -281,18 +402,22 @@ fun StreamingTextPanel(
                             label = {
                                 Text(
                                     text = "${term.sourceTerm} → ${term.targetTerm}",
-                                    style = MaterialTheme.typography.labelSmall
+                                    style = MaterialTheme.typography.labelMedium
                                 )
                             }
                         )
                     }
                 }
             }
+
+            if (actionsRow != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                actionsRow()
+            }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TechnicalDomainSelectorRow(
     domains: List<TechnicalDomain>,
@@ -301,16 +426,17 @@ fun TechnicalDomainSelectorRow(
     onSelectDomain: (TechnicalDomain) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    FlowRow(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         domains.forEach { domain ->
             FilterChip(
                 selected = domain.id == selectedDomainId,
                 onClick = { onSelectDomain(domain) },
-                label = { Text(domain.localizedName(uiLocale)) }
+                label = { Text(domain.localizedName(uiLocale), maxLines = 1) }
             )
         }
     }

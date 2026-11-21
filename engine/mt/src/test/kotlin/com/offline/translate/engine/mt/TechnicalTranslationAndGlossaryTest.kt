@@ -79,7 +79,9 @@ class TechnicalTranslationAndGlossaryTest {
         normalizer = DefaultNumberUnitNormalizer()
         fakeDao = InMemoryGlossaryDao()
         termAdapter = DefaultGlossaryTermAdapter(fakeDao)
-        directEngine = OfflineNeuralTranslationEngine(termAdapter)
+        directEngine = OfflineNeuralTranslationEngine(termAdapter).apply {
+            allowNetworkFallback = false
+        }
         pivotEngine = PivotTranslationEngine(directEngine, termAdapter)
     }
 

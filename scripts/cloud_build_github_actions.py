@@ -8,6 +8,7 @@ downloads the compiled APKs (`standard` and `airgapped`) into `dist/`,
 and creates a GitHub Release with direct download URLs for the APKs.
 """
 
+import argparse
 import base64
 import io
 import json
@@ -36,10 +37,22 @@ def load_token_safely() -> Optional[str]:
     return os.environ.get("GITHUB_TOKEN")
 
 
+class StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None and "api.github.com" not in newurl:
+            if "Authorization" in new_req.headers:
+                del new_req.headers["Authorization"]
+            if "Authorization" in new_req.unredirected_hdrs:
+                del new_req.unredirected_hdrs["Authorization"]
+        return new_req
+
+
 class GitHubApiClient:
     def __init__(self, token: str):
         self.token = token
         self.base_url = "https://api.github.com"
+        self.opener = urllib.request.build_opener(StripAuthOnCrossHostRedirect())
 
     def request(
         self,
@@ -65,7 +78,7 @@ class GitHubApiClient:
         if body is not None:
             req.add_header("Content-Type", content_type)
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with self.opener.open(req, timeout=90) as resp:
             raw = resp.read()
             if not raw:
                 return {}
@@ -168,19 +181,44 @@ def push_project_via_git_data_api(client: GitHubApiClient, owner: str, repo: str
     return new_commit["sha"]
 
 
+def print_failed_job_logs(client: GitHubApiClient, owner: str, repo: str, run_id: int) -> None:
+    try:
+        jobs = client.request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+        for job in jobs.get("jobs", []):
+            for step in job.get("steps", []):
+                print(f"  Step [{step.get('number')}] {step.get('name')}: {step.get('conclusion')}")
+            if job.get("conclusion") == "failure":
+                log_bytes = client.request(
+                    "GET", f"/repos/{owner}/{repo}/actions/jobs/{job['id']}/logs"
+                )
+                if isinstance(log_bytes, bytes):
+                    log_text = log_bytes.decode("utf-8", errors="ignore")
+                    lines = log_text.splitlines()
+                    print("\n--- LAST 120 LINES OF FAILED JOB LOG ---")
+                    print("\n".join(lines[-120:]))
+    except Exception as e:
+        print(f"Could not fetch detailed job logs: {e}")
+
+
 def wait_for_workflow_and_download_apks(
-    client: GitHubApiClient, owner: str, repo: str, head_sha: str
+    client: GitHubApiClient, owner: str, repo: str, head_sha: Optional[str] = None
 ) -> List[Path]:
-    print("[GitHub Actions] Waiting for cloud build workflow run to start...")
+    print("[GitHub Actions] Locating workflow run...")
     run_id = None
     run_html_url = ""
     for _ in range(30):
         runs = client.request("GET", f"/repos/{owner}/{repo}/actions/runs?per_page=5")
-        for r in runs.get("workflow_runs", []):
-            if r.get("head_sha") == head_sha:
-                run_id = r["id"]
-                run_html_url = r["html_url"]
-                break
+        workflow_runs = runs.get("workflow_runs", [])
+        if head_sha:
+            for r in workflow_runs:
+                if r.get("head_sha") == head_sha:
+                    run_id = r["id"]
+                    run_html_url = r["html_url"]
+                    break
+        elif workflow_runs:
+            run_id = workflow_runs[0]["id"]
+            run_html_url = workflow_runs[0]["html_url"]
+            break
         if run_id is not None:
             break
         time.sleep(4)
@@ -188,17 +226,33 @@ def wait_for_workflow_and_download_apks(
     if run_id is None:
         raise RuntimeError("Workflow run did not start within 120 seconds.")
 
-    print(f"[GitHub Actions] Cloud build running: {run_html_url}")
+    print(f"[GitHub Actions] Monitoring run {run_id}: {run_html_url}")
     while True:
-        run_info = client.request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}")
-        status = run_info.get("status")
-        conclusion = run_info.get("conclusion")
-        print(f"  status={status}, conclusion={conclusion}")
-        if status == "completed":
-            if conclusion != "success":
-                raise RuntimeError(f"Cloud build failed (conclusion={conclusion}). See logs: {run_html_url}")
-            break
-        time.sleep(12)
+        try:
+            runs = client.request("GET", f"/repos/{owner}/{repo}/actions/runs?per_page=5")
+            run_info = next(
+                (r for r in runs.get("workflow_runs", []) if r["id"] == run_id),
+                None,
+            )
+            if run_info is None:
+                time.sleep(5)
+                continue
+            status = run_info.get("status")
+            conclusion = run_info.get("conclusion")
+            print(f"  status={status}, conclusion={conclusion}", flush=True)
+            if status == "completed":
+                if conclusion != "success":
+                    print_failed_job_logs(client, owner, repo, run_id)
+                    raise RuntimeError(
+                        f"Cloud build failed (conclusion={conclusion}). See logs: {run_html_url}"
+                    )
+                break
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 502, 503, 504):
+                print(f"  transient HTTP {e.code}, retrying...", flush=True)
+            else:
+                raise
+        time.sleep(10)
 
     artifacts = client.request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
     extracted_apks: List[Path] = []
@@ -209,12 +263,23 @@ def wait_for_workflow_and_download_apks(
         zip_bytes = client.request("GET", "", full_url=dl_url)
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
             for member in zf.namelist():
-                if member.endswith(".apk"):
+                if member.endswith(".apk") or member.endswith(".aab"):
                     target_name = Path(member).name
                     out_file = DIST_DIR / target_name
                     out_file.write_bytes(zf.read(member))
                     extracted_apks.append(out_file)
-                    print(f"[OK] Saved APK to: {out_file} ({out_file.stat().st_size} bytes)")
+                    print(f"[OK] Saved artifact to: {out_file} ({out_file.stat().st_size} bytes)")
+    # Also fetch and display live 6-direction translation test lines from job logs
+    try:
+        jobs = client.request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+        for job in jobs.get("jobs", []):
+            log_bytes = client.request("GET", f"/repos/{owner}/{repo}/actions/jobs/{job['id']}/logs")
+            if isinstance(log_bytes, bytes):
+                for line in log_bytes.decode("utf-8", errors="ignore").splitlines():
+                    if "[LIVE TEST" in line or "Verified using" in line or "app-standard-release" in line:
+                        print("  [CI LOG]", line.strip())
+    except Exception:
+        pass
     return extracted_apks
 
 
@@ -249,6 +314,10 @@ def publish_github_release(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--monitor-only", action="store_true", help="Attach to latest workflow run without pushing")
+    args = parser.parse_args()
+
     token = load_token_safely()
     if not token:
         print("ERROR: GITHUB_TOKEN not found in .env", file=sys.stderr)
@@ -257,10 +326,9 @@ def main() -> int:
     repo_name = os.environ.get("GITHUB_REPO_NAME", "tech-speech-offline-translator")
     client = GitHubApiClient(token)
     owner = ensure_repo(client, repo_name)
-    sha = push_project_via_git_data_api(client, owner, repo_name)
+    sha = None if args.monitor_only else push_project_via_git_data_api(client, owner, repo_name)
     apks = wait_for_workflow_and_download_apks(client, owner, repo_name, sha)
-    release_url = publish_github_release(client, owner, repo_name, apks)
-    print(f"\n=== CLOUD APK BUILD COMPLETE ===\nRelease URL: {release_url}")
+    print(f"\n=== CLOUD APK BUILD COMPLETE ===\nDownloaded {len(apks)} artifacts to {DIST_DIR}")
     return 0
 
 

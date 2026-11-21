@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.offline.translate.core.model.HardwareBenchmarkResult
@@ -33,21 +34,24 @@ enum class TtsEnginePreference {
 data class UserSettings(
     val sourceLanguageCode: String = Language.RUSSIAN.code,
     val targetLanguageCode: String = Language.ENGLISH.code,
-    val defaultDomainId: String = TechnicalDomain.IT_PROGRAMMING.id,
+    val autoDetectSource: Boolean = false,
+    val defaultDomainId: String = TechnicalDomain.GENERAL_TECH.id,
     val qualityProfile: QualityProfile = QualityProfile.BALANCED,
     val ttsEnabled: Boolean = true,
-    val ttsEnginePreference: TtsEnginePreference = TtsEnginePreference.PIPER_NEURAL,
+    val ttsSpeechRate: Float = 1.0f,
+    val ttsEnginePreference: TtsEnginePreference = TtsEnginePreference.ANDROID_SYSTEM_OFFLINE,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
-    val devMockMode: Boolean = true,
-    val onboardingCompleted: Boolean = false,
-    val catalogUrl: String = "https://packs.offline-tech-translate.org/v1/index.json",
+    val devMockMode: Boolean = false,
+    val onboardingCompleted: Boolean = true,
+    val catalogUrl: String = "https://dl.google.com/mlkit/translate/",
     val benchmarkResult: HardwareBenchmarkResult? = null
 ) {
     val activePair: LanguagePair
-        get() = LanguagePair(
-            source = Language.byCodeOrCreate(sourceLanguageCode),
-            target = Language.byCodeOrCreate(targetLanguageCode)
-        )
+        get() {
+            val src = if (autoDetectSource) Language.AUTO else Language.byCodeOrCreate(sourceLanguageCode)
+            val tgt = Language.byCodeOrCreate(targetLanguageCode)
+            return LanguagePair(source = src, target = tgt)
+        }
 }
 
 @Singleton
@@ -59,9 +63,11 @@ class AppSettingsDataStore @Inject constructor(
     private object Keys {
         val SOURCE_LANG = stringPreferencesKey("source_lang")
         val TARGET_LANG = stringPreferencesKey("target_lang")
+        val AUTO_DETECT_SOURCE = booleanPreferencesKey("auto_detect_source")
         val DEFAULT_DOMAIN = stringPreferencesKey("default_domain")
         val QUALITY_PROFILE = stringPreferencesKey("quality_profile")
         val TTS_ENABLED = booleanPreferencesKey("tts_enabled")
+        val TTS_SPEECH_RATE = floatPreferencesKey("tts_speech_rate")
         val TTS_ENGINE = stringPreferencesKey("tts_engine")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DEV_MOCK_MODE = booleanPreferencesKey("dev_mock_mode")
@@ -77,37 +83,64 @@ class AppSettingsDataStore @Inject constructor(
         UserSettings(
             sourceLanguageCode = prefs[Keys.SOURCE_LANG] ?: Language.RUSSIAN.code,
             targetLanguageCode = prefs[Keys.TARGET_LANG] ?: Language.ENGLISH.code,
-            defaultDomainId = prefs[Keys.DEFAULT_DOMAIN] ?: TechnicalDomain.IT_PROGRAMMING.id,
+            autoDetectSource = prefs[Keys.AUTO_DETECT_SOURCE] ?: false,
+            defaultDomainId = prefs[Keys.DEFAULT_DOMAIN] ?: TechnicalDomain.GENERAL_TECH.id,
             qualityProfile = prefs[Keys.QUALITY_PROFILE]?.let {
                 runCatching { QualityProfile.valueOf(it) }.getOrNull()
             } ?: QualityProfile.BALANCED,
             ttsEnabled = prefs[Keys.TTS_ENABLED] ?: true,
+            ttsSpeechRate = prefs[Keys.TTS_SPEECH_RATE] ?: 1.0f,
             ttsEnginePreference = prefs[Keys.TTS_ENGINE]?.let {
                 runCatching { TtsEnginePreference.valueOf(it) }.getOrNull()
-            } ?: TtsEnginePreference.PIPER_NEURAL,
+            } ?: TtsEnginePreference.ANDROID_SYSTEM_OFFLINE,
             themeMode = prefs[Keys.THEME_MODE]?.let {
                 runCatching { AppThemeMode.valueOf(it) }.getOrNull()
             } ?: AppThemeMode.SYSTEM,
-            devMockMode = prefs[Keys.DEV_MOCK_MODE] ?: true,
-            onboardingCompleted = prefs[Keys.ONBOARDING_DONE] ?: false,
-            catalogUrl = prefs[Keys.CATALOG_URL] ?: "https://packs.offline-tech-translate.org/v1/index.json",
+            devMockMode = prefs[Keys.DEV_MOCK_MODE] ?: false,
+            onboardingCompleted = prefs[Keys.ONBOARDING_DONE] ?: true,
+            catalogUrl = prefs[Keys.CATALOG_URL] ?: "https://dl.google.com/mlkit/translate/",
             benchmarkResult = benchmark
         )
     }
 
     suspend fun setLanguagePair(sourceCode: String, targetCode: String) {
         context.dataStore.edit { prefs ->
-            prefs[Keys.SOURCE_LANG] = sourceCode
-            prefs[Keys.TARGET_LANG] = targetCode
+            if (sourceCode == Language.AUTO_CODE) {
+                prefs[Keys.AUTO_DETECT_SOURCE] = true
+            } else {
+                prefs[Keys.AUTO_DETECT_SOURCE] = false
+                prefs[Keys.SOURCE_LANG] = sourceCode
+            }
+            if (targetCode != Language.AUTO_CODE) {
+                prefs[Keys.TARGET_LANG] = targetCode
+            }
         }
     }
 
-    suspend fun swapLanguages() {
+    suspend fun setAutoDetectSource(enabled: Boolean) {
         context.dataStore.edit { prefs ->
-            val currentSrc = prefs[Keys.SOURCE_LANG] ?: Language.RUSSIAN.code
+            prefs[Keys.AUTO_DETECT_SOURCE] = enabled
+        }
+    }
+
+    suspend fun swapLanguages(lastDetectedSourceCode: String? = null) {
+        context.dataStore.edit { prefs ->
+            val wasAuto = prefs[Keys.AUTO_DETECT_SOURCE] ?: false
+            val currentSrc = if (wasAuto) {
+                lastDetectedSourceCode ?: prefs[Keys.SOURCE_LANG] ?: Language.RUSSIAN.code
+            } else {
+                prefs[Keys.SOURCE_LANG] ?: Language.RUSSIAN.code
+            }
             val currentTgt = prefs[Keys.TARGET_LANG] ?: Language.ENGLISH.code
-            prefs[Keys.SOURCE_LANG] = currentTgt
-            prefs[Keys.TARGET_LANG] = currentSrc
+            val newSrc = currentTgt
+            val newTgt = if (currentSrc == currentTgt || currentSrc == Language.AUTO_CODE) {
+                if (currentTgt == "ru") "en" else "ru"
+            } else {
+                currentSrc
+            }
+            prefs[Keys.AUTO_DETECT_SOURCE] = false
+            prefs[Keys.SOURCE_LANG] = newSrc
+            prefs[Keys.TARGET_LANG] = newTgt
         }
     }
 
@@ -121,6 +154,10 @@ class AppSettingsDataStore @Inject constructor(
 
     suspend fun setTtsEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.TTS_ENABLED] = enabled }
+    }
+
+    suspend fun setTtsSpeechRate(rate: Float) {
+        context.dataStore.edit { it[Keys.TTS_SPEECH_RATE] = rate.coerceIn(0.5f, 2.0f) }
     }
 
     suspend fun setTtsEnginePreference(pref: TtsEnginePreference) {

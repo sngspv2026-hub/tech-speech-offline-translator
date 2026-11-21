@@ -1,4 +1,4 @@
-name: Android Offline Translator CI & APK Release
+name: Android Offline Translator CI & Signed Release APK
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify-and-build-apk:
+  verify-and-build-release-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,27 +27,54 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run Structural, Permission Isolation & Technical Phrase Tests
+      - name: Run Structural, Security & Technical Phrase Tests
         run: |
           python scripts/verify_project_integrity.py
           python scripts/evaluate_technical_test_suite.py
 
-      - name: Build Default Offline Language Packs (.tpk)
-        run: |
-          python scripts/convert_and_package_models.py --pack-id org.offline.translate.pack.ru_en_core --version 1.2.0 --source-lang ru --target-lang en --routing DIRECT --output dist/pack_ru_en_v1.2.0.tpk --dry-run
-          python scripts/convert_and_package_models.py --pack-id org.offline.translate.pack.tr_en_pivot_ru --version 1.2.0 --source-lang ru --target-lang tr --routing PIVOT --pivot-lang en --output dist/pack_tr_en_pivot_ru_v1.2.0.tpk --dry-run
-          python scripts/convert_and_package_models.py --pack-id org.offline.translate.pack.ru_tr_direct --version 1.0.0 --source-lang ru --target-lang tr --routing DIRECT --output dist/pack_ru_tr_direct_v1.0.0.tpk --dry-run
+      - name: Run All Unit & Live 6-Direction Translation Tests across 18 modules
+        run: ./gradlew testStandardDebugUnitTest --rerun-tasks --info | grep -E "LIVE TEST|PASSED|FAILED|BUILD SUCCESSFUL|BUILD FAILED" || true
+        continue-on-error: false
 
-      - name: Run Gradle Unit Tests across all 18 modules
+      - name: Verify All Unit Tests Exit 0
         run: ./gradlew testStandardDebugUnitTest
 
-      - name: Assemble Standard and Air-Gapped APKs
-        run: ./gradlew :app:assembleStandardDebug :app:assembleAirgappedDebug
+      - name: Generate Release Signing Keystore (CI Ephemeral)
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/release-signing.jks" \
+            -storetype PKCS12 \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias techspeech_release \
+            -storepass "TechSpeech2026Release" \
+            -keypass "TechSpeech2026Release" \
+            -dname "CN=TechSpeech Translator, OU=Engineering, O=OfflineTech, L=Moscow, C=RU"
 
-      - name: Upload Built APKs and Offline Language Packs (.tpk)
+      - name: Clean & Assemble Signed Release APK, Release AAB & Debug APK
+        env:
+          RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/release-signing.jks
+          RELEASE_STORE_PASSWORD: TechSpeech2026Release
+          RELEASE_KEY_ALIAS: techspeech_release
+          RELEASE_KEY_PASSWORD: TechSpeech2026Release
+        run: |
+          ./gradlew :app:assembleStandardRelease :app:bundleStandardRelease :app:assembleAirgappedRelease :app:assembleStandardDebug
+
+      - name: Verify APK Signature & Print Artifact Sizes
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name "apksigner" | sort -V | tail -n 1)
+          echo "Using apksigner: $APKSIGNER"
+          "$APKSIGNER" verify --verbose app/build/outputs/apk/standard/release/app-standard-release.apk
+          "$APKSIGNER" verify --verbose app/build/outputs/apk/airgapped/release/app-airgapped-release.apk
+          ls -lh app/build/outputs/apk/standard/release/*.apk
+          ls -lh app/build/outputs/apk/airgapped/release/*.apk
+          ls -lh app/build/outputs/bundle/standardRelease/*.aab
+
+      - name: Upload Signed APKs and AAB Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: tech-speech-offline-translator-apks-and-packs
+          name: tech-speech-translator-v2-release-artifacts
           path: |
-            app/build/outputs/apk/**/*.apk
-            dist/*.tpk
+            app/build/outputs/apk/standard/release/app-standard-release.apk
+            app/build/outputs/apk/airgapped/release/app-airgapped-release.apk
+            app/build/outputs/apk/standard/debug/app-standard-debug.apk
+            app/build/outputs/bundle/standardRelease/app-standard-release.aab

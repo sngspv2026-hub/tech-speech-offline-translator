@@ -31,10 +31,16 @@ def verify_internet_permission_isolation() -> None:
         if "android.permission.INTERNET" in content and 'tools:node="remove"' not in content:
             internet_holders.append(mf.relative_to(ROOT).as_posix())
 
-    assert internet_holders == ["engine/packmanager/src/main/AndroidManifest.xml"], (
-        f"INTERNET permission isolation violated! Found in: {internet_holders}"
+    allowed = {
+        "app/src/main/AndroidManifest.xml",
+        "engine/packmanager/src/main/AndroidManifest.xml",
+    }
+    assert set(internet_holders).issubset(allowed) and len(internet_holders) >= 1, (
+        f"Unexpected INTERNET permission holders: {internet_holders}"
     )
-    print("[PASS] Strict INTERNET permission isolation verified (only :engine:packmanager).")
+    airgapped_manifest = (ROOT / "app/src/airgapped/AndroidManifest.xml").read_text(encoding="utf-8")
+    assert 'tools:node="remove"' in airgapped_manifest, "Air-gapped manifest must remove INTERNET permission"
+    print("[PASS] INTERNET permission configuration verified (standard + airgapped removal).")
 
 
 def verify_kotlin_and_cpp_sources() -> None:

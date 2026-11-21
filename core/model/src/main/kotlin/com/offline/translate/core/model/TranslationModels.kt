@@ -15,6 +15,7 @@ data class SpeechRecognitionEvent(
     val isFinal: Boolean,
     val audioRmsDb: Float = -60f,
     val processingLatencyMs: Long = 0L,
+    val errorMessage: String? = null,
     val timestampMs: Long = System.currentTimeMillis()
 ) {
     val fullText: String
@@ -34,12 +35,13 @@ data class AppliedTermMatch(
 )
 
 /**
- * Incremental or final translation output with timing breakdown and glossary audit trail.
+ * Incremental or final translation output with timing breakdown, glossary audit trail, and real error diagnostic.
  */
 @Serializable
 data class TranslationSegment(
     val segmentId: Long,
     val sourceLanguage: String,
+    val detectedSourceLanguage: String? = null,
     val targetLanguage: String,
     val domainId: String,
     val rawSourceText: String,
@@ -51,6 +53,8 @@ data class TranslationSegment(
     val pivotText: String? = null,
     val appliedTerms: List<AppliedTermMatch> = emptyList(),
     val preservedTokens: List<String> = emptyList(),
+    val engineBackendName: String = "",
+    val errorMessage: String? = null,
     val asrLatencyMs: Long = 0L,
     val mtLatencyMs: Long = 0L,
     val endToEndLatencyMs: Long = 0L,

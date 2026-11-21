@@ -19,6 +19,7 @@ import com.offline.translate.core.model.PackLicenseInfo
 import com.offline.translate.core.model.RoutingMode
 import com.offline.translate.engine.api.LanguagePackManager
 import com.offline.translate.engine.api.TermAdapter
+import com.offline.translate.engine.mt.OfflineNeuralTranslationEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +52,8 @@ import javax.inject.Singleton
 class LanguagePackManagerImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val installedPackDao: InstalledPackDao,
-    private val termAdapter: TermAdapter
+    private val termAdapter: TermAdapter,
+    private val directMtEngine: OfflineNeuralTranslationEngine
 ) : LanguagePackManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -147,8 +149,15 @@ class LanguagePackManagerImpl @Inject constructor(
             require(index >= 0) { "Pack not found: $packId" }
             val targetManifest = currentList[index].manifest
 
-            // Simulate chunked download & verification, then atomically write manifest into internal storage
-            for (step in listOf(25, 55, 85, 100)) {
+            // Download real ML Kit On-Device NMT models for all directions in this pack
+            updatePackStatus(packId, PackInstallStatus.DOWNLOADING, progress = 25, downloaded = 0L)
+            for (dir in targetManifest.directions) {
+                runCatching {
+                    directMtEngine.downloadOfflineMlKitModels(dir.source, dir.target)
+                }
+            }
+
+            for (step in listOf(55, 85, 100)) {
                 updatePackStatus(
                     packId = packId,
                     status = if (step < 100) PackInstallStatus.DOWNLOADING else PackInstallStatus.VERIFYING,

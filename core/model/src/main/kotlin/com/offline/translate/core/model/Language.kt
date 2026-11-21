@@ -4,7 +4,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * Represents a language supported by the application or dynamically added via a Language Pack.
- * Adding a new language requires only installing a language pack with its ISO 639-1/639-3 code.
+ * Supports AUTO ("auto") for automatic source language detection alongside RU, EN, TR.
  */
 @Serializable
 data class Language(
@@ -14,10 +14,21 @@ data class Language(
     val script: String = "Latn",
     val bcp47Tag: String = code
 ) {
+    val isAuto: Boolean get() = code == AUTO_CODE
+
     fun localizedName(uiLocaleCode: String): String =
         displayName[uiLocaleCode] ?: displayName["en"] ?: nativeName
 
     companion object {
+        const val AUTO_CODE = "auto"
+
+        val AUTO = Language(
+            code = AUTO_CODE,
+            displayName = mapOf("ru" to "Автоопределение", "en" to "Auto-detect", "tr" to "Otomatik Algıla"),
+            nativeName = "Auto",
+            script = "Latn",
+            bcp47Tag = "ru-RU"
+        )
         val RUSSIAN = Language(
             code = "ru",
             displayName = mapOf("ru" to "Русский", "en" to "Russian", "tr" to "Rusça"),
@@ -41,9 +52,11 @@ data class Language(
         )
 
         val DEFAULT_LANGUAGES = listOf(RUSSIAN, ENGLISH, TURKISH)
+        val SOURCE_LANGUAGES_WITH_AUTO = listOf(AUTO, RUSSIAN, ENGLISH, TURKISH)
 
         fun byCodeOrCreate(code: String): Language {
             val normalized = code.trim().lowercase()
+            if (normalized == AUTO_CODE) return AUTO
             return DEFAULT_LANGUAGES.find { it.code == normalized }
                 ?: Language(
                     code = normalized,
@@ -62,7 +75,17 @@ data class LanguagePair(
 ) {
     val id: String get() = "${source.code}-${target.code}"
 
-    fun swapped(): LanguagePair = LanguagePair(source = target, target = source)
+    fun swapped(lastDetectedCode: String? = null): LanguagePair {
+        val resolvedSource = if (source.isAuto) {
+            val fallback = lastDetectedCode?.let { Language.byCodeOrCreate(it) }
+                ?.takeIf { !it.isAuto && it.code != target.code }
+                ?: Language.DEFAULT_LANGUAGES.first { it.code != target.code }
+            fallback
+        } else {
+            source
+        }
+        return LanguagePair(source = target, target = resolvedSource)
+    }
 }
 
 @Serializable

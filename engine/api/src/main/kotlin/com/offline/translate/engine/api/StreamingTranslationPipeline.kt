@@ -14,11 +14,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Coordinates the near-real-time streaming pipeline:
- * ASR hypothesis (with domain Hotwords biasing) -> Number/Unit normalization (+ Imperial->SI inline conversion) ->
- * Glossary/ID shielding -> Incremental/Final NMT -> Optional TTS (with Acoustic Echo Ducking).
- *
- * Uses prefix translation caching so confirmed ASR prefixes are not re-translated on every 300 ms tick.
+ * Coordinates the near-real-time streaming and text translation pipeline:
+ * ASR/Text input -> Number/Unit normalization (+ Imperial->SI inline conversion) ->
+ * Glossary/ID shielding -> Hybrid NMT (ML Kit On-Device + Multi-Endpoint HTTPS NMT + Offline Dictionary) -> Optional TTS.
  */
 @Singleton
 class StreamingTranslationPipeline @Inject constructor(
@@ -42,7 +40,8 @@ class StreamingTranslationPipeline @Inject constructor(
         val key = "${pair.id}:$domainId"
         if (key == lastHotwordsPairAndDomain) return
         val bundle = engineRegistry.acquireActivePair(pair, thermalMonitor.effectiveProfile(profile))
-        val hotwords = termAdapter.extractAsrHotwords(pair.source.code, domainId)
+        val srcCode = if (pair.source.isAuto) "ru" else pair.source.code
+        val hotwords = termAdapter.extractAsrHotwords(srcCode, domainId)
         if (hotwords.isNotEmpty()) {
             bundle.asrEngine.configureHotwords(hotwords)
         }
@@ -54,7 +53,10 @@ class StreamingTranslationPipeline @Inject constructor(
         pair: LanguagePair,
         domainId: String,
         requestedProfile: QualityProfile,
-        ttsEnabled: Boolean
+        ttsEnabled: Boolean,
+        speechRate: Float = 1.0f,
+        enableNormalization: Boolean = true,
+        enableImperialConversion: Boolean = true
     ): TranslationSegment {
         val effectiveProfile = thermalMonitor.effectiveProfile(requestedProfile)
         val bundle = engineRegistry.acquireActivePair(pair, effectiveProfile)
@@ -67,12 +69,10 @@ class StreamingTranslationPipeline @Inject constructor(
         }
 
         val rawFullText = event.fullText
-        val normalizedFullText = numberUnitNormalizer.convertImperialToSiInline(
-            numberUnitNormalizer.normalize(rawFullText, pair.source.code)
-        )
-        val normalizedConfirmed = numberUnitNormalizer.convertImperialToSiInline(
-            numberUnitNormalizer.normalize(event.confirmedText, pair.source.code)
-        )
+        val normLang = if (pair.source.isAuto) event.languageCode.ifBlank { "ru" } else pair.source.code
+
+        val normalizedFullText = normalizeIfEnabled(rawFullText, normLang, enableNormalization, enableImperialConversion)
+        val normalizedConfirmed = normalizeIfEnabled(event.confirmedText, normLang, enableNormalization, enableImperialConversion)
 
         val mtStartMs = System.currentTimeMillis()
         val output: TranslationEngineOutput
@@ -90,7 +90,6 @@ class StreamingTranslationPipeline @Inject constructor(
             confirmedTranslated = output.translatedText
             previewTailTranslated = ""
         } else {
-            // Incremental translation: reuse cached confirmed translation if unchanged
             if (normalizedConfirmed.isNotBlank() && normalizedConfirmed == cachedConfirmedSource) {
                 confirmedTranslated = cachedConfirmedTranslation
             } else if (normalizedConfirmed.isNotBlank()) {
@@ -108,9 +107,7 @@ class StreamingTranslationPipeline @Inject constructor(
                 confirmedTranslated = ""
             }
 
-            val normalizedTail = numberUnitNormalizer.convertImperialToSiInline(
-                numberUnitNormalizer.normalize(event.unstableTailText, pair.source.code)
-            )
+            val normalizedTail = normalizeIfEnabled(event.unstableTailText, normLang, enableNormalization, enableImperialConversion)
             if (normalizedTail.isNotBlank()) {
                 output = bundle.translationEngine.translate(
                     text = normalizedTail,
@@ -131,10 +128,12 @@ class StreamingTranslationPipeline @Inject constructor(
 
         val mtLatency = (System.currentTimeMillis() - mtStartMs).coerceAtLeast(1L)
         val totalLatency = event.processingLatencyMs + mtLatency
+        val resolvedSourceLang = output.detectedSourceLanguage ?: normLang
 
         val segment = TranslationSegment(
             segmentId = event.segmentId,
-            sourceLanguage = pair.source.code,
+            sourceLanguage = resolvedSourceLang,
+            detectedSourceLanguage = output.detectedSourceLanguage,
             targetLanguage = pair.target.code,
             domainId = domainId,
             rawSourceText = rawFullText,
@@ -146,6 +145,8 @@ class StreamingTranslationPipeline @Inject constructor(
             pivotText = output.pivotIntermediateText,
             appliedTerms = output.appliedTerms,
             preservedTokens = output.preservedTokens,
+            engineBackendName = output.engineBackendName,
+            errorMessage = event.errorMessage ?: output.errorMessage,
             asrLatencyMs = event.processingLatencyMs,
             mtLatencyMs = mtLatency,
             endToEndLatencyMs = totalLatency
@@ -153,11 +154,24 @@ class StreamingTranslationPipeline @Inject constructor(
 
         _segments.emit(segment)
 
-        if (event.isFinal && ttsEnabled && segment.fullTranslatedText.isNotBlank()) {
-            bundle.ttsEngine.speak(segment.fullTranslatedText, pair.target.code)
+        if (event.isFinal && ttsEnabled && segment.errorMessage == null && segment.fullTranslatedText.isNotBlank()) {
+            bundle.ttsEngine.speak(segment.fullTranslatedText, pair.target.code, speechRate)
         }
 
         return segment
+    }
+
+    private fun normalizeIfEnabled(
+        text: String,
+        lang: String,
+        enableNorm: Boolean,
+        enableImperial: Boolean
+    ): String {
+        var res = if (enableNorm) numberUnitNormalizer.normalize(text, lang) else text
+        if (enableImperial) {
+            res = numberUnitNormalizer.convertImperialToSiInline(res)
+        }
+        return res
     }
 
     fun setRecordingState(recording: Boolean) {

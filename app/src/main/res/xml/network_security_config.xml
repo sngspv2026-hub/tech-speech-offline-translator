@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <!--
-      Forbids cleartext traffic globally and restricts HTTPS solely to the
-      offline Language Pack repository domain. No speech or text can ever be sent out.
+      Enforces TLS/HTTPS (cleartextTrafficPermitted="false") with standard system CA certificates
+      for Google ML Kit On-Device model downloads and HTTPS NMT fallback endpoints.
     -->
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">packs.offline-tech-translate.org</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>

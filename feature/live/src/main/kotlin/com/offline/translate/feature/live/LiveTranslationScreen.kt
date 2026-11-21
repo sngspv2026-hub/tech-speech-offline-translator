@@ -1,7 +1,12 @@
 package com.offline.translate.feature.live
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,33 +14,59 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.offline.translate.core.designsystem.AudioLevelIndicator
+import com.offline.translate.core.designsystem.ErrorDiagnosticBanner
 import com.offline.translate.core.designsystem.LanguagePairSelectorBar
 import com.offline.translate.core.designsystem.StreamingTextPanel
 import com.offline.translate.core.designsystem.TechnicalDomainSelectorRow
-import com.offline.translate.core.model.RoutingMode
-import com.offline.translate.core.model.ThermalLevel
+import com.offline.translate.core.model.Language
+import com.offline.translate.core.model.TechnicalDomain
 import java.util.Locale
 
 @Composable
@@ -43,9 +74,41 @@ fun LiveTranslationRoute(
     viewModel: LiveTranslationViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.startRecording()
+        } else {
+            viewModel.onMicrophonePermissionDenied()
+        }
+    }
+
     LiveTranslationScreen(
         state = state,
-        onToggleRecord = viewModel::toggleRecording,
+        onInputChanged = viewModel::updateInputText,
+        onClear = viewModel::clearAll,
+        onTranslateClick = viewModel::translateCurrentText,
+        onToggleRecord = {
+            if (state.isRecording) {
+                viewModel.stopRecording()
+            } else {
+                val hasPerm = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                if (hasPerm) {
+                    viewModel.startRecording()
+                } else {
+                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        },
+        onSpeakTranslation = viewModel::speakTranslatedResult,
+        onToggleFavorite = viewModel::toggleFavoriteCurrentResult,
+        onDismissError = viewModel::dismissError,
         onSelectSource = viewModel::selectSourceLanguage,
         onSelectTarget = viewModel::selectTargetLanguage,
         onSwapLanguages = viewModel::swapLanguages,
@@ -56,48 +119,31 @@ fun LiveTranslationRoute(
 @Composable
 fun LiveTranslationScreen(
     state: LiveTranslationUiState,
+    onInputChanged: (String) -> Unit,
+    onClear: () -> Unit,
+    onTranslateClick: () -> Unit,
     onToggleRecord: () -> Unit,
-    onSelectSource: (com.offline.translate.core.model.Language) -> Unit,
-    onSelectTarget: (com.offline.translate.core.model.Language) -> Unit,
+    onSpeakTranslation: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onDismissError: () -> Unit,
+    onSelectSource: (Language) -> Unit,
+    onSelectTarget: (Language) -> Unit,
     onSwapLanguages: () -> Unit,
-    onSelectDomain: (com.offline.translate.core.model.TechnicalDomain) -> Unit,
+    onSelectDomain: (TechnicalDomain) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val uiLocale = Locale.getDefault().language.takeIf { it in setOf("ru", "en", "tr") } ?: "ru"
+    val clipboard = LocalClipboardManager.current
+    var copiedFeedback by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Status bar: Profile, RAM budget monitor (<1.5 GB), Routing mode, Thermal status
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AssistChip(
-                onClick = {},
-                label = { Text("${state.effectiveProfile.name} • RAM ${state.estimatedRamMb} MB / 1500 MB") }
-            )
-            AssistChip(
-                onClick = {},
-                label = {
-                    val routeLabel = if (state.routingUsed == RoutingMode.PIVOT) "PIVOT (via EN)" else "DIRECT"
-                    Text(routeLabel)
-                }
-            )
-            if (state.thermalLevel != ThermalLevel.NORMAL) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text("Thermal: ${state.thermalLevel.name}") }
-                )
-            }
-        }
-
-        // Quick language pair selector with one-tap Swap
+        // 1. Language Pair Selector (Auto-detect, RU, EN, TR + Swap)
         LanguagePairSelectorBar(
             pair = state.pair,
             availableLanguages = state.availableLanguages,
@@ -105,10 +151,12 @@ fun LiveTranslationScreen(
             onSelectSource = onSelectSource,
             onSelectTarget = onSelectTarget,
             onSwap = onSwapLanguages,
-            swapContentDescription = "Поменять языки местами / Swap languages"
+            swapContentDescription = "Поменять языки местами",
+            allowAutoDetect = true,
+            detectedSourceCode = state.detectedSourceCode
         )
 
-        // Technical domain chips
+        // 2. Technical Domain Selector
         TechnicalDomainSelectorRow(
             domains = state.availableDomains,
             selectedDomainId = state.selectedDomain.id,
@@ -116,74 +164,207 @@ fun LiveTranslationScreen(
             onSelectDomain = onSelectDomain
         )
 
-        // Audio level indicator (RMS dBFS + VAD status)
-        AudioLevelIndicator(
-            rmsDb = state.audioRmsDb,
-            isSpeechDetected = state.isSpeechDetected
-        )
+        // 3. Progress bar when translation or speech recognition is running
+        if (state.isTranslating || state.isRecording) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
 
-        // Block 1: Original recognized speech (partial visually distinct from final)
-        StreamingTextPanel(
-            title = "${state.pair.source.localizedName(uiLocale)} (ASR)",
-            confirmedText = state.sourceConfirmedText,
-            unstablePartialText = state.sourceUnstablePartialText,
-            isFinal = state.isFinalSegment,
-            placeholderText = "Нажмите кнопку микрофона для начала синхронного распознавания...",
-            latencyBadgeText = if (state.preservedTokens.isNotEmpty()) {
-                "ID/Units: ${state.preservedTokens.joinToString(", ")}"
-            } else null,
-            modifier = Modifier.weight(1f, fill = false)
-        )
+        // 4. Real Diagnostic Error Banner (never hidden!)
+        if (state.errorMessage != null) {
+            ErrorDiagnosticBanner(
+                errorMessage = state.errorMessage,
+                onRetry = if (state.inputText.isNotBlank()) onTranslateClick else null,
+                onDismiss = onDismissError
+            )
+        }
 
-        // Block 2: Translated speech (partial visually distinct from final + glossary badges + latency)
+        // 5. Source Input Card (Text input + Clear + Paste + Translate + Voice Mic)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = state.inputText,
+                    onValueChange = {
+                        copiedFeedback = false
+                        onInputChanged(it)
+                    },
+                    label = {
+                        val srcLabel = if (state.pair.source.isAuto) {
+                            "Исходный текст (Авто: RU / EN / TR)"
+                        } else {
+                            "Исходный текст (${state.pair.source.localizedName(uiLocale)})"
+                        }
+                        Text(srcLabel)
+                    },
+                    placeholder = {
+                        Text("Введите текст или нажмите кнопку микрофона...")
+                    },
+                    trailingIcon = {
+                        if (state.inputText.isNotEmpty()) {
+                            IconButton(onClick = {
+                                copiedFeedback = false
+                                onClear()
+                            }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Очистить поле")
+                            }
+                        }
+                    },
+                    minLines = 3,
+                    maxLines = 7,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (state.isRecording) {
+                    AudioLevelIndicator(
+                        rmsDb = state.audioRmsDb,
+                        isSpeechDetected = state.isSpeechDetected
+                    )
+                }
+
+                // Ergonomic action row for one-handed smartphone operation
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val clip = clipboard.getText()?.text
+                            if (!clip.isNullOrBlank()) {
+                                onInputChanged(clip)
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Вставить", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Вставить")
+                    }
+
+                    Button(
+                        onClick = {
+                            copiedFeedback = false
+                            onTranslateClick()
+                        },
+                        enabled = !state.isTranslating && state.inputText.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        if (state.isTranslating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Перевод...")
+                        } else {
+                            Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Перевести", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    val micDesc = if (state.isRecording) "Остановить запись голоса" else "Голосовой ввод"
+                    FloatingActionButton(
+                        onClick = onToggleRecord,
+                        shape = CircleShape,
+                        containerColor = if (state.isRecording) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                        },
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
+                        modifier = Modifier
+                            .size(50.dp)
+                            .semantics { contentDescription = micDesc }
+                    ) {
+                        Icon(
+                            imageVector = if (state.isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = micDesc,
+                            tint = if (state.isRecording) {
+                                MaterialTheme.colorScheme.onError
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // 6. Large High-Contrast Translation Result Area with Copy, Speak (TTS), and Favorite buttons
+        val backendBadge = buildString {
+            if (state.engineBackendName.isNotBlank()) append(state.engineBackendName)
+            if (state.endToEndLatencyMs > 0) {
+                if (isNotEmpty()) append(" • ")
+                append("${state.endToEndLatencyMs} ms")
+            }
+        }.ifBlank { null }
+
         StreamingTextPanel(
-            title = "${state.pair.target.localizedName(uiLocale)} (MT • ${state.selectedDomain.localizedName(uiLocale)})",
+            title = "Перевод (${state.pair.target.localizedName(uiLocale)})",
             confirmedText = state.translatedConfirmedText,
             unstablePartialText = state.translatedUnstablePartialText,
             isFinal = state.isFinalSegment,
-            placeholderText = "Перевод появится здесь в реальном времени (partial каждые ~300 мс)...",
+            placeholderText = "Здесь отобразится перевод с сохранением структуры текста, чисел СИ и технических терминов...",
             appliedTerms = state.appliedTerms,
-            latencyBadgeText = if (state.endToEndLatencyMs > 0) "${state.endToEndLatencyMs} ms" else null,
-            modifier = Modifier.weight(1f, fill = false)
+            latencyBadgeText = backendBadge,
+            actionsRow = if (state.translatedConfirmedText.isNotBlank()) {
+                {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalIconButton(onClick = {
+                                clipboard.setText(AnnotatedString(state.translatedConfirmedText))
+                                copiedFeedback = true
+                            }) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Копировать перевод")
+                            }
+                            FilledTonalIconButton(onClick = onSpeakTranslation) {
+                                Icon(Icons.Default.VolumeUp, contentDescription = "Озвучить перевод")
+                            }
+                            if (state.lastHistoryId != null) {
+                                FilledTonalIconButton(onClick = onToggleFavorite) {
+                                    Icon(
+                                        imageVector = if (state.isCurrentFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                                        contentDescription = "В избранное"
+                                    )
+                                }
+                            }
+                        }
+                        if (copiedFeedback) {
+                            Text(
+                                text = "✓ Скопировано",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        } else if (state.preservedTokens.isNotEmpty()) {
+                            Text(
+                                text = "Сохранено: ${state.preservedTokens.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else null
         )
 
         Spacer(modifier = Modifier.height(8.dp))
-
-        // Large central Record button with TalkBack support
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            val recordButtonDesc = if (state.isRecording) {
-                "Остановить синхронный перевод / Stop live translation"
-            } else {
-                "Начать синхронный перевод / Start live translation"
-            }
-            FloatingActionButton(
-                onClick = onToggleRecord,
-                shape = CircleShape,
-                containerColor = if (state.isRecording) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
-                modifier = Modifier
-                    .size(76.dp)
-                    .semantics { contentDescription = recordButtonDesc }
-            ) {
-                Icon(
-                    imageVector = if (state.isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                    contentDescription = recordButtonDesc,
-                    modifier = Modifier.size(36.dp)
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = if (state.isRecording) "Идёт потоковый перевод (VAD активен)..." else "Нажмите для записи",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }

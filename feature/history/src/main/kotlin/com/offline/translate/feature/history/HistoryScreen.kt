@@ -3,17 +3,26 @@ package com.offline.translate.feature.history
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -38,12 +48,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.offline.translate.core.database.TranslationHistoryDao
 import com.offline.translate.core.database.TranslationHistoryEntity
+import com.offline.translate.core.datastore.AppSettingsDataStore
+import com.offline.translate.core.model.Language
+import com.offline.translate.core.model.LanguagePair
+import com.offline.translate.core.model.SpeechRecognitionEvent
+import com.offline.translate.engine.api.EngineRegistry
+import com.offline.translate.engine.api.StreamingTranslationPipeline
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -51,8 +68,13 @@ import javax.inject.Inject
 
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
-    private val historyDao: TranslationHistoryDao
+    private val historyDao: TranslationHistoryDao,
+    private val pipeline: StreamingTranslationPipeline? = null,
+    private val engineRegistry: EngineRegistry? = null,
+    private val settingsDataStore: AppSettingsDataStore? = null
 ) : ViewModel() {
+
+    constructor(historyDao: TranslationHistoryDao) : this(historyDao, null, null, null)
 
     private val queryFlow = MutableStateFlow("")
     private val onlyFavoritesFlow = MutableStateFlow(false)
@@ -87,6 +109,62 @@ class HistoryViewModel @Inject constructor(
         }
     }
 
+    fun clearNonFavoriteHistory() {
+        viewModelScope.launch {
+            historyDao.clearNonFavorites()
+        }
+    }
+
+    fun speakItem(item: TranslationHistoryEntity) {
+        val reg = engineRegistry ?: return
+        val ds = settingsDataStore ?: return
+        viewModelScope.launch {
+            val s = ds.settingsFlow.first()
+            val pair = LanguagePair(
+                Language.byCodeOrCreate(item.sourceLang),
+                Language.byCodeOrCreate(item.targetLang)
+            )
+            val bundle = reg.acquireActivePair(pair, s.qualityProfile)
+            bundle.ttsEngine.speak(item.translatedText, item.targetLang, s.ttsSpeechRate)
+        }
+    }
+
+    fun retranslateItem(item: TranslationHistoryEntity) {
+        val pipe = pipeline ?: return
+        val ds = settingsDataStore ?: return
+        viewModelScope.launch {
+            val s = ds.settingsFlow.first()
+            val pair = LanguagePair(
+                Language.byCodeOrCreate(item.sourceLang),
+                Language.byCodeOrCreate(item.targetLang)
+            )
+            val seg = pipe.processSpeechEvent(
+                event = SpeechRecognitionEvent(
+                    segmentId = System.currentTimeMillis(),
+                    languageCode = item.sourceLang,
+                    confirmedText = item.sourceText,
+                    unstableTailText = "",
+                    isFinal = true
+                ),
+                pair = pair,
+                domainId = item.domainId,
+                requestedProfile = s.qualityProfile,
+                ttsEnabled = false,
+                speechRate = s.ttsSpeechRate
+            )
+            if (seg.errorMessage == null && seg.fullTranslatedText.isNotBlank()) {
+                historyDao.insert(
+                    item.copy(
+                        id = 0L,
+                        translatedText = seg.fullTranslatedText,
+                        latencyMs = seg.endToEndLatencyMs,
+                        timestampMs = System.currentTimeMillis()
+                    )
+                )
+            }
+        }
+    }
+
     suspend fun exportHistoryCsv(): String {
         val all = historyDao.getAllSnapshot()
         val sb = StringBuilder()
@@ -99,10 +177,6 @@ class HistoryViewModel @Inject constructor(
         return sb.toString()
     }
 
-    /**
-     * Generates a structured bilingual Technical Meeting / Inspection Protocol in Markdown format
-     * with session entries and a consolidated table of enforced glossary terms.
-     */
     suspend fun exportMeetingProtocolMarkdown(): String {
         val all = historyDao.getAllSnapshot()
         val sb = StringBuilder()
@@ -133,6 +207,7 @@ fun HistoryRoute(
     val items by viewModel.historyItems.collectAsStateWithLifecycle()
     var query by remember { mutableStateOf("") }
     var onlyFav by remember { mutableStateOf(false) }
+    var statusBanner by remember { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
 
@@ -147,30 +222,47 @@ fun HistoryRoute(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("История и Протоколы", style = MaterialTheme.typography.headlineSmall)
+            Text("История и Избранное", style = MaterialTheme.typography.headlineSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(
                     onClick = {
                         scope.launch {
                             val md = viewModel.exportMeetingProtocolMarkdown()
                             clipboard.setText(AnnotatedString(md))
+                            statusBanner = "Протокол Markdown скопирован в буфер"
                         }
                     }
                 ) {
                     Icon(Icons.Default.Description, contentDescription = null)
-                    Text(" Протокол .MD")
+                    Text(" .MD")
                 }
                 OutlinedButton(
                     onClick = {
                         scope.launch {
                             val csv = viewModel.exportHistoryCsv()
                             clipboard.setText(AnnotatedString(csv))
+                            statusBanner = "CSV скопирован в буфер"
                         }
                     }
                 ) {
                     Text("CSV")
                 }
+                IconButton(onClick = {
+                    viewModel.clearNonFavoriteHistory()
+                    statusBanner = "Неизбранные записи удалены"
+                }) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = "Очистить историю")
+                }
             }
+        }
+
+        if (statusBanner.isNotBlank()) {
+            Text(
+                text = statusBanner,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.secondary,
+                fontWeight = FontWeight.Medium
+            )
         }
 
         Row(
@@ -185,6 +277,18 @@ fun HistoryRoute(
                     viewModel.setSearchQuery(it)
                 },
                 label = { Text("Поиск по истории") },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = {
+                            query = ""
+                            viewModel.setSearchQuery("")
+                        }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Очистить поиск")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.weight(1f)
             )
             FilterChip(
@@ -193,44 +297,79 @@ fun HistoryRoute(
                     onlyFav = !onlyFav
                     viewModel.setOnlyFavorites(onlyFav)
                 },
-                label = { Text("Избранное") }
+                label = { Text("★ Избранное") }
             )
         }
 
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(items, key = { it.id }) { row ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+        if (items.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Text(
+                    text = "История переводов пока пуста. Выполненные переводы из всех режимов автоматически сохраняются здесь.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(20.dp)
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(items, key = { it.id }) { row ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "${row.sourceLang.uppercase()} → ${row.targetLang.uppercase()} • ${row.domainId} • ${row.latencyMs} ms",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(text = row.sourceText, style = MaterialTheme.typography.bodyLarge)
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${row.sourceLang.uppercase()} → ${row.targetLang.uppercase()} • ${row.domainId} • ${row.latencyMs} ms",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Row {
+                                    IconButton(onClick = {
+                                        clipboard.setText(AnnotatedString(row.translatedText))
+                                        statusBanner = "Перевод скопирован"
+                                    }) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "Копировать")
+                                    }
+                                    IconButton(onClick = { viewModel.speakItem(row) }) {
+                                        Icon(Icons.Default.VolumeUp, contentDescription = "Озвучить")
+                                    }
+                                    IconButton(onClick = { viewModel.retranslateItem(row) }) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Повторить перевод")
+                                    }
+                                    IconButton(onClick = { viewModel.toggleFavorite(row) }) {
+                                        Icon(
+                                            imageVector = if (row.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                                            contentDescription = "В избранное",
+                                            tint = if (row.isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    IconButton(onClick = { viewModel.deleteItem(row.id) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Удалить")
+                                    }
+                                }
+                            }
+                            Text(text = row.sourceText, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = row.translatedText,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.secondary
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.Medium
                             )
-                        }
-                        IconButton(onClick = { viewModel.toggleFavorite(row) }) {
-                            Icon(
-                                imageVector = if (row.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                                contentDescription = "В избранное"
-                            )
-                        }
-                        IconButton(onClick = { viewModel.deleteItem(row.id) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Удалить")
                         }
                     }
                 }

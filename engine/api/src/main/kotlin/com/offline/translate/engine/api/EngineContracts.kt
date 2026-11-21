@@ -17,7 +17,6 @@ import java.io.File
 
 /**
  * Voice Activity Detection (VAD) engine interface.
- * Runs continuously with negligible CPU overhead to gate ASR activation.
  */
 interface VadEngine {
     val isSpeechActive: StateFlow<Boolean>
@@ -27,8 +26,6 @@ interface VadEngine {
 
 /**
  * Streaming Automatic Speech Recognition (ASR) engine contract.
- * Emits partial hypotheses every ~300 ms and final segments on speech boundary.
- * Supports contextual hotword biasing from the active technical domain glossary.
  */
 interface AsrEngine {
     val engineId: String
@@ -43,10 +40,6 @@ interface AsrEngine {
         cpuThreads: Int = profile.defaultCpuThreads
     )
 
-    /**
-     * Injects domain glossary hotwords with boost scores (e.g. "DN-50" -> 2.5f, "parseTelemetryPacket" -> 3.0f)
-     * into sherpa-onnx hotwords decoder or whisper.cpp initial_prompt.
-     */
     fun configureHotwords(hotwordsWithBoost: Map<String, Float>) {}
 
     suspend fun startStream(languageCode: String)
@@ -56,7 +49,7 @@ interface AsrEngine {
 }
 
 /**
- * Offline Spoken/Text Language Identifier (LID) for automatic speaker routing in Conversation Mode.
+ * Offline Spoken/Text Language Identifier (LID) for automatic language detection (RU / EN / TR).
  */
 interface LanguageIdentifier {
     fun detectLanguageCode(
@@ -66,8 +59,7 @@ interface LanguageIdentifier {
 }
 
 /**
- * Cleans OCR noise from industrial equipment nameplates, PLC screens, and engineering drawings
- * before feeding into NumberUnitNormalizer and GlossaryTermAdapter.
+ * Cleans OCR noise from industrial equipment nameplates, PLC screens, and engineering drawings.
  */
 interface TechnicalOcrCleaner {
     fun cleanOcrText(rawOcrText: String): String
@@ -75,7 +67,6 @@ interface TechnicalOcrCleaner {
 
 /**
  * Neural Machine Translation (NMT) engine contract.
- * Supports direct models (OPUS-MT int8), pivot routing (e.g., ru -> en -> tr), and optional multilingual models.
  */
 interface TranslationEngine {
     val engineId: String
@@ -102,15 +93,18 @@ interface TranslationEngine {
 
 data class TranslationEngineOutput(
     val translatedText: String,
+    val detectedSourceLanguage: String? = null,
     val routingUsed: RoutingMode = RoutingMode.DIRECT,
     val pivotIntermediateText: String? = null,
     val appliedTerms: List<AppliedTermMatch> = emptyList(),
     val preservedTokens: List<String> = emptyList(),
+    val engineBackendName: String = "Hybrid NMT",
+    val errorMessage: String? = null,
     val latencyMs: Long = 0L
 )
 
 /**
- * Offline Text-To-Speech (TTS) engine contract (Android System Offline TTS or Piper VITS ONNX).
+ * Text-To-Speech (TTS) engine contract.
  */
 interface TtsEngine {
     val engineId: String
@@ -123,9 +117,7 @@ interface TtsEngine {
 }
 
 /**
- * Normalizes spoken numbers and technical measurement units before MT
- * (e.g. "пять мегапаскалей" -> "5 MPa", "beş megapaskal" -> "5 MPa"),
- * and optionally appends inline SI conversions for imperial units (e.g. "150 psi [≈ 1.03 MPa]").
+ * Normalizes spoken numbers and technical measurement units before MT.
  */
 interface NumberUnitNormalizer {
     fun normalize(text: String, languageCode: String): String
@@ -166,9 +158,6 @@ interface TermAdapter {
     suspend fun importTbx(tbxXmlContent: String, isUserDefined: Boolean = true): Int
     suspend fun exportTbx(domainId: String? = null, userOnly: Boolean = false): String
 
-    /**
-     * Compresses glossary entries into a compact zlib+Base64 string (`TPKGLOSS1:...`) suitable for offline QR sharing.
-     */
     suspend fun exportCompactShareCode(domainId: String? = null, userOnly: Boolean = true): String = ""
     suspend fun importCompactShareCode(shareCode: String, isUserDefined: Boolean = true): Int = 0
 }
@@ -200,15 +189,14 @@ interface ThermalMonitor {
 }
 
 /**
- * Runs a micro-benchmark on first start to select the fastest stable backend (CPU NEON int8 vs XNNPACK vs NNAPI).
+ * Runs a micro-benchmark on first start to select the fastest stable backend.
  */
 interface HardwareBenchmarkRunner {
     suspend fun runMicroBenchmark(): HardwareBenchmarkResult
 }
 
 /**
- * Central registry that maps manifest engine descriptors to concrete engines and enforces the < 1.5 GB RAM budget
- * by keeping only the active language pair loaded in memory.
+ * Central registry that maps manifest engine descriptors to concrete engines and enforces the < 1.5 GB RAM budget.
  */
 interface EngineRegistry {
     val activePair: StateFlow<LanguagePair?>

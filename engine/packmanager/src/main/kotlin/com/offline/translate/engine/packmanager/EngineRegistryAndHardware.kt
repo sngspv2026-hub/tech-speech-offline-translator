@@ -16,6 +16,7 @@ import com.offline.translate.engine.api.EngineRegistry
 import com.offline.translate.engine.api.HardwareBenchmarkRunner
 import com.offline.translate.engine.api.LanguagePackManager
 import com.offline.translate.engine.api.ThermalMonitor
+import com.offline.translate.engine.asr.AndroidSystemAsrEngine
 import com.offline.translate.engine.asr.MockAsrEngine
 import com.offline.translate.engine.mt.OfflineNeuralTranslationEngine
 import com.offline.translate.engine.mt.PivotTranslationEngine
@@ -33,16 +34,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.sin
 
 /**
  * Enforces the < 1.5 GB peak RAM budget on mid-range 6 GB devices (Xiaomi Redmi Note Pro 5G).
- * Lazy-loads only the currently active language pair and unloads previous models on pair switch.
+ * By default (`isDevMockMode = false`), binds the real `AndroidSystemAsrEngine`,
+ * real `OfflineNeuralTranslationEngine` / `PivotTranslationEngine`, and real `PiperNeuralTtsEngine`.
  */
 @Singleton
 class EngineRegistryImpl @Inject constructor(
     private val packManager: LanguagePackManager,
     private val thermalMonitor: ThermalMonitor,
+    private val realAsrEngine: AndroidSystemAsrEngine,
     private val mockAsrEngine: MockAsrEngine,
     private val directMtEngine: OfflineNeuralTranslationEngine,
     private val pivotMtEngine: PivotTranslationEngine,
@@ -58,11 +60,12 @@ class EngineRegistryImpl @Inject constructor(
     private val _estimatedMemoryUsageMb = MutableStateFlow(145)
     override val estimatedMemoryUsageMb: StateFlow<Int> = _estimatedMemoryUsageMb.asStateFlow()
 
-    private val _isDevMockMode = MutableStateFlow(true)
+    private val _isDevMockMode = MutableStateFlow(false)
     override val isDevMockMode: StateFlow<Boolean> = _isDevMockMode.asStateFlow()
 
     private var currentBundle: ActiveEnginesBundle? = null
     private var loadedProfile: QualityProfile? = null
+    private var loadedMockMode: Boolean = false
 
     override fun setDevMockMode(enabled: Boolean) {
         _isDevMockMode.value = enabled
@@ -73,12 +76,12 @@ class EngineRegistryImpl @Inject constructor(
         profile: QualityProfile
     ): ActiveEnginesBundle = mutex.withLock {
         val effectiveProfile = thermalMonitor.effectiveProfile(profile)
+        val useMocks = _isDevMockMode.value
         val existing = currentBundle
-        if (existing != null && existing.pair == pair && loadedProfile == effectiveProfile) {
+        if (existing != null && existing.pair == pair && loadedProfile == effectiveProfile && loadedMockMode == useMocks) {
             return existing
         }
 
-        // Unload previous active pair first so peak RAM stays strictly below 1,500 MB
         if (existing != null) {
             SafeLogger.i("EngineRegistry", "Unloading previous pair ${existing.pair.id} before loading ${pair.id}")
             existing.asrEngine.unload()
@@ -87,11 +90,12 @@ class EngineRegistryImpl @Inject constructor(
         }
 
         val routing = packManager.getRoutingForPair(pair)
+        val asrEngine = if (useMocks) mockAsrEngine else realAsrEngine
         val mtEngine = if (routing == RoutingMode.PIVOT) pivotMtEngine else directMtEngine
-        val ttsEngine = if (_isDevMockMode.value) mockTtsEngine else piperTtsEngine
+        val ttsEngine = if (useMocks) mockTtsEngine else piperTtsEngine
         val threads = thermalMonitor.effectiveCpuThreads(effectiveProfile)
 
-        mockAsrEngine.loadModel(
+        asrEngine.loadModel(
             languageCode = pair.source.code,
             modelDir = null,
             profile = effectiveProfile,
@@ -107,7 +111,6 @@ class EngineRegistryImpl @Inject constructor(
         )
         ttsEngine.initialize(pair.target.code, null)
 
-        // Compute realistic RAM footprint for active pair (strictly < 1500 MB)
         val baseJvmUiMb = 140
         val asrRamMb = when (effectiveProfile) {
             QualityProfile.FAST -> 110
@@ -120,13 +123,14 @@ class EngineRegistryImpl @Inject constructor(
 
         val newBundle = ActiveEnginesBundle(
             pair = pair,
-            asrEngine = mockAsrEngine,
+            asrEngine = asrEngine,
             translationEngine = mtEngine,
             ttsEngine = ttsEngine,
             routingMode = routing
         )
         currentBundle = newBundle
         loadedProfile = effectiveProfile
+        loadedMockMode = useMocks
         _activePair.value = pair
         return newBundle
     }
@@ -146,7 +150,6 @@ class EngineRegistryImpl @Inject constructor(
 
 /**
  * Monitors Android PowerManager thermal status (API 29+) and battery temperature.
- * Automatically throttles model size, beam width, and CPU threads when overheating is detected.
  */
 @Singleton
 class ThermalAdaptationMonitor @Inject constructor(
@@ -200,8 +203,7 @@ class ThermalAdaptationMonitor @Inject constructor(
 }
 
 /**
- * Runs a micro-benchmark on first launch to measure ARM CPU int8 throughput vs NNAPI stability,
- * defaulting to CPU_ARM_NEON_INT8 on mid-range MediaTek Dimensity / Snapdragon 7 devices unless NNAPI wins cleanly.
+ * Runs a micro-benchmark on first launch to measure ARM CPU int8 throughput vs NNAPI stability.
  */
 @Singleton
 class HardwareBenchmarkRunnerImpl @Inject constructor(
@@ -216,12 +218,11 @@ class HardwareBenchmarkRunnerImpl @Inject constructor(
 
         val cores = Runtime.getRuntime().availableProcessors()
         val optimalThreads = when {
-            cores >= 8 -> 4 // Bind to 4 performance Cortex-A78/A715 cores on octa-core big.LITTLE
+            cores >= 8 -> 4
             cores >= 4 -> 3
             else -> 2
         }
 
-        // Run a synthetic int8 dot-product kernel to measure CPU single/multi-core throughput
         val startNs = System.nanoTime()
         var acc = 0L
         for (i in 0 until 250_000) {
